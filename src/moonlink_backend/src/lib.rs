@@ -10,7 +10,7 @@ use std::{collections::HashMap, hash::Hash};
 use tokio::sync::RwLock;
 
 // Default local filesystem directory where all tables data will be stored under.
-const DEFAULT_MOONLINK_TABLE_BATH_PATH: &str = "./mooncake_test/";
+const DEFAULT_MOONLINK_TABLE_BASE_PATH: &str = "./mooncake_test/";
 
 pub struct MoonlinkBackend<T: Eq + Hash> {
     moonlink_table_base_path: String,
@@ -20,7 +20,7 @@ pub struct MoonlinkBackend<T: Eq + Hash> {
 
 impl<T: Eq + Hash> Default for MoonlinkBackend<T> {
     fn default() -> Self {
-        Self::new(DEFAULT_MOONLINK_TABLE_BATH_PATH.to_string())
+        Self::new(DEFAULT_MOONLINK_TABLE_BASE_PATH.to_string())
     }
 }
 
