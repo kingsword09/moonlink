@@ -109,9 +109,18 @@ mod tests {
             .await
             .unwrap();
         let old = service.scan_table(&"test", None).await.unwrap();
-        // wait 2 second
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        let new = service.scan_table(&"test", None).await.unwrap();
+        // wait until data changes with a timeout
+        let new = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let state = service.scan_table(&"test", None).await.unwrap();
+                if state.data != old.data {
+                    break state;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("timeout waiting for table update");
         assert_ne!(old.data, new.data);
     }
 }
