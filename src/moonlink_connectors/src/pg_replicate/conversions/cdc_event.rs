@@ -114,32 +114,6 @@ impl CdcEventConverter {
         Ok(CdcEvent::Delete((src_table_id, row, delete_body.xid())))
     }
 
-    /// Attempt to get table id from the given replication message.
-    pub fn try_get_table_id(
-        value: &ReplicationMessage<LogicalReplicationMessage>,
-    ) -> Option<SrcTableId> {
-        match value {
-            ReplicationMessage::XLogData(xlog_data) => match xlog_data.data() {
-                LogicalReplicationMessage::Insert(insert_body) => Some(insert_body.rel_id()),
-                LogicalReplicationMessage::Update(update_body) => Some(update_body.rel_id()),
-                LogicalReplicationMessage::Delete(delete_body) => Some(delete_body.rel_id()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// Get column schemas for the requested table from table schemas.
-    fn get_column_schemas(
-        table_id: SrcTableId,
-        table_schemas: &HashMap<SrcTableId, TableSchema>,
-    ) -> Result<&Vec<ColumnSchema>, CdcEventConversionError> {
-        Ok(&table_schemas
-            .get(&table_id)
-            .ok_or(CdcEventConversionError::MissingSchema(table_id))?
-            .column_schemas)
-    }
-
     pub fn try_from(
         value: ReplicationMessage<LogicalReplicationMessage>,
         table_schemas: &HashMap<SrcTableId, TableSchema>,
@@ -157,7 +131,10 @@ impl CdcEventConverter {
                 LogicalReplicationMessage::Type(type_body) => Ok(CdcEvent::Type(type_body)),
                 LogicalReplicationMessage::Insert(insert_body) => {
                     let table_id = insert_body.rel_id();
-                    let column_schemas = Self::get_column_schemas(table_id, table_schemas)?;
+                    let column_schemas = &table_schemas
+                        .get(&table_id)
+                        .ok_or(CdcEventConversionError::MissingSchema(table_id))?
+                        .column_schemas;
                     Ok(Self::try_from_insert_body(
                         table_id,
                         column_schemas,
@@ -166,7 +143,10 @@ impl CdcEventConverter {
                 }
                 LogicalReplicationMessage::Update(update_body) => {
                     let table_id = update_body.rel_id();
-                    let column_schemas = Self::get_column_schemas(table_id, table_schemas)?;
+                    let column_schemas = &table_schemas
+                        .get(&table_id)
+                        .ok_or(CdcEventConversionError::MissingSchema(table_id))?
+                        .column_schemas;
                     Ok(Self::try_from_update_body(
                         table_id,
                         column_schemas,
@@ -175,7 +155,10 @@ impl CdcEventConverter {
                 }
                 LogicalReplicationMessage::Delete(delete_body) => {
                     let table_id = delete_body.rel_id();
-                    let column_schemas = Self::get_column_schemas(table_id, table_schemas)?;
+                    let column_schemas = &table_schemas
+                        .get(&table_id)
+                        .ok_or(CdcEventConversionError::MissingSchema(table_id))?
+                        .column_schemas;
                     Ok(Self::try_from_delete_body(
                         table_id,
                         column_schemas,
