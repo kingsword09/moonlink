@@ -73,24 +73,6 @@ where
         Ok(())
     }
 
-    /// Perform a table maintaince operation based on requested mode.
-    /// Notice, it's only exposed for debugging, testing and admin usage.
-    ///
-    /// There're currently three modes supported:
-    /// - "data": perform a data compaction, only data files smaller than a threshold, or with too many deleted rows will be compacted.
-    /// - "index": perform an index merge operation, only index files smaller than a threshold, or with too many deleted rows will be merged.    
-    /// - "full": perform a full compaction, which merges all data files and all index files, whatever file size they are of.
-    pub async fn optimize_table(&self, database_id: D, table_id: T, mode: &str) -> Result<()> {
-        if mode == "data" {
-            return self.perform_data_compaction(database_id, table_id).await;
-        } else if mode == "index" {
-            return self.perform_index_merge(database_id, table_id).await;
-        } else if mode == "full" {
-            return self.perform_full_compaction(database_id, table_id).await;
-        }
-        Err(Error::InvalidArgumentError(format!("Unrecognizable table optimization mode {mode}, which should be one of `data`, `index`, `full`")))
-    }
-
     /// # Arguments
     ///
     /// * src_uri: connection string for source database (row storage database).
@@ -188,6 +170,24 @@ where
         };
 
         Ok(read_state.clone())
+    }
+
+    /// Perform a table maintaince operation based on requested mode.
+    /// Notice, it's only exposed for debugging, testing and admin usage.
+    ///
+    /// There're currently three modes supported:
+    /// - "data": perform a data compaction, only data files smaller than a threshold, or with too many deleted rows will be compacted.
+    /// - "index": perform an index merge operation, only index files smaller than a threshold, or with too many deleted rows will be merged.    
+    /// - "full": perform a full compaction, which merges all data files and all index files, whatever file size they are of.
+    pub async fn optimize_table(&self, database_id: D, table_id: T, mode: &str) -> Result<()> {
+        if mode == "data" {
+            return self.perform_data_compaction(database_id, table_id).await;
+        } else if mode == "index" {
+            return self.perform_index_merge(database_id, table_id).await;
+        } else if mode == "full" {
+            return self.perform_full_compaction(database_id, table_id).await;
+        }
+        Err(Error::InvalidArgumentError(format!("Unrecognizable table optimization mode {mode}, which should be one of `data`, `index`, `full`")))
     }
 
     /// Gracefully shutdown a replication connection identified by its URI.
