@@ -62,6 +62,8 @@ pub enum TableEvent {
     },
     /// Force an index merge operation.
     ForceIndexMerge,
+    /// Force a data compaction operation.
+    ForceDataCompaction,
     /// Drop table.
     DropTable,
     /// Alter table,
