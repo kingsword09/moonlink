@@ -48,7 +48,7 @@ use delete_vector::BatchDeletionVector;
 pub(crate) use disk_slice::DiskSliceWriter;
 use mem_slice::MemSlice;
 pub(crate) use snapshot::{PuffinDeletionBlobAtRead, SnapshotTableState};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use table_snapshot::{IcebergSnapshotImportResult, IcebergSnapshotIndexMergeResult};
@@ -499,9 +499,6 @@ pub struct MooncakeTable {
 
     /// Table notifier, which is used to sent multiple types of event completion information.
     table_notify: Option<Sender<TableEvent>>,
-
-    // LSNs of pending flush operations.
-    pending_flush_lsns: BTreeSet<u64>,
 }
 
 impl MooncakeTable {
@@ -581,7 +578,6 @@ impl MooncakeTable {
             iceberg_table_manager: Some(table_manager),
             last_iceberg_snapshot_lsn,
             table_notify: None,
-            pending_flush_lsns: BTreeSet::new(),
         })
     }
 
@@ -845,14 +841,6 @@ impl MooncakeTable {
         self.next_snapshot_task.new_disk_slices.push(disk_slice);
 
         Ok(())
-    }
-
-    pub fn remove_pending_flush_lsn(&mut self, lsn: u64) {
-        self.pending_flush_lsns.remove(&lsn);
-    }
-
-    pub fn get_min_pending_flush_lsn(&self) -> u64 {
-        self.pending_flush_lsns.first().copied().unwrap_or(u64::MAX)
     }
 
     // Create a snapshot of the last committed version, return current snapshot's version and payload to perform iceberg snapshot.
