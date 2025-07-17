@@ -10,7 +10,6 @@ pub use moonlink::ReadState;
 use moonlink::{TableEventManager, TableState};
 use moonlink_connectors::ReplicationManager;
 use moonlink_metadata_store::base_metadata_store::MetadataStoreTrait;
-use moonlink_metadata_store::SqliteMetadataStore;
 use std::hash::Hash;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -30,23 +29,16 @@ where
     D: std::convert::From<u32> + Eq + Hash + Clone + std::fmt::Display,
     T: std::convert::From<u32> + Eq + Hash + Clone + std::fmt::Display,
 {
-    // # Arguments
-    //
-    // * metadata_store_uris: connection strings for metadata storage database.
-    //
-    // TODO(hjiang): [`_metadata_store_uris`] is not needed for moonlink self-managed database.
-    pub async fn new(base_path: String, _metadata_store_uris: Vec<String>) -> Result<Self> {
+    pub async fn new(
+        base_path: String,
+        metadata_store_accessor: Box<dyn MetadataStoreTrait>,
+    ) -> Result<Self> {
         logging::init_logging();
 
         // Canonicalize moonlink backend directory, so all paths stored are of absolute path.
         tokio::fs::create_dir_all(&base_path).await?;
         let base_path = tokio::fs::canonicalize(base_path).await?;
         let base_path_str = base_path.to_str().unwrap();
-
-        // Create a metadata storage accessor.
-        // TODO(hjiang): pg_mooncake will pass in.
-        let metadata_store_accessor =
-            Box::new(SqliteMetadataStore::new_with_directory(base_path_str).await?);
 
         // Re-create directory for temporary files directory and read cache files directory under base directory.
         let temp_files_dir = file_utils::get_temp_file_directory_under_base(base_path_str);
@@ -86,13 +78,10 @@ where
     /// # Arguments
     ///
     /// * src_uri: connection string for source database (row storage database).
-    ///
-    /// TODO(hjiang): [`_metadata_store_uris`] is not needed for moonlink self-managed database.
     pub async fn create_table(
         &self,
         database_id: D,
         table_id: T,
-        _metadata_store_uri: String,
         src_table_name: String,
         src_uri: String,
     ) -> Result<()> {
