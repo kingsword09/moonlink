@@ -121,31 +121,11 @@ impl ReplicationClient {
         &mut self,
         table_name: &TableName,
     ) -> Result<(), ReplicationClientError> {
-        // First check if the table is already in the publication
-        let check_query = format!(
-            "SELECT 1 FROM pg_publication_tables WHERE pubname = 'moonlink_pub' AND schemaname = {} AND tablename = {};",
-            quote_literal(&table_name.schema),
-            quote_literal(&table_name.name)
-        );
-
-        let check_result = self.postgres_client.query_one(&check_query, &[]).await;
-
-        // If the table is already in the publication, no need to add it
-        // This valid case occurs when a single rowstore replicates to multiple moonlink tables
-        if let Ok(_) = check_result {
-            debug!(
-                "Table {} is already in publication moonlink_pub",
-                table_name
-            );
-            return Ok(());
-        }
-
-        // Table is not in publication, so add it
-        let add_query = format!(
+        let query = format!(
             "ALTER PUBLICATION moonlink_pub ADD TABLE {};",
             table_name.as_quoted_identifier()
         );
-        self.postgres_client.simple_query(&add_query).await?;
+        self.postgres_client.simple_query(&query).await?;
         Ok(())
     }
 
