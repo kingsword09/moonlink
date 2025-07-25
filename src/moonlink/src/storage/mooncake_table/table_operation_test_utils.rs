@@ -6,10 +6,13 @@ use tokio::sync::mpsc::Receiver;
 use crate::row::MoonlinkRow;
 use crate::storage::io_utils;
 use crate::storage::mooncake_table::{
-    DataCompactionPayload, DataCompactionResult, FileIndiceMergePayload, FileIndiceMergeResult,
-    IcebergSnapshotPayload, IcebergSnapshotResult, MaintenanceOption, SnapshotOption,
+    AlterTableRequest, DataCompactionPayload, DataCompactionResult, FileIndiceMergePayload,
+    FileIndiceMergeResult, IcebergSnapshotPayload, IcebergSnapshotResult, MaintenanceOption,
+    SnapshotOption, TableMetadata as MooncakeTableMetadata,
 };
-use crate::table_notify::TableEvent;
+use crate::table_notify::{
+    DataCompactionMaintenanceStatus, IndexMergeMaintenanceStatus, TableEvent,
+};
 use crate::{MooncakeTable, SnapshotReadOutput};
 use crate::{ReadState, Result};
 
@@ -124,8 +127,8 @@ pub(crate) async fn sync_mooncake_snapshot(
 ) -> (
     u64,
     Option<IcebergSnapshotPayload>,
-    Option<FileIndiceMergePayload>,
-    Option<DataCompactionPayload>,
+    IndexMergeMaintenanceStatus,
+    DataCompactionMaintenanceStatus,
     Vec<String>,
 ) {
     let notification = receiver.recv().await.unwrap();
@@ -151,7 +154,7 @@ pub(crate) async fn sync_mooncake_snapshot(
 }
 async fn sync_iceberg_snapshot(receiver: &mut Receiver<TableEvent>) -> IcebergSnapshotResult {
     let notification = receiver.recv().await.unwrap();
-    if let TableEvent::IcebergSnapshot {
+    if let TableEvent::IcebergSnapshotResult {
         iceberg_snapshot_result,
     } = notification
     {
@@ -162,7 +165,7 @@ async fn sync_iceberg_snapshot(receiver: &mut Receiver<TableEvent>) -> IcebergSn
 }
 async fn sync_index_merge(receiver: &mut Receiver<TableEvent>) -> FileIndiceMergeResult {
     let notification = receiver.recv().await.unwrap();
-    if let TableEvent::IndexMerge { index_merge_result } = notification {
+    if let TableEvent::IndexMergeResult { index_merge_result } = notification {
         index_merge_result
     } else {
         panic!("Expected index merge completion notification, but get another one.");
@@ -170,7 +173,7 @@ async fn sync_index_merge(receiver: &mut Receiver<TableEvent>) -> FileIndiceMerg
 }
 async fn sync_data_compaction(receiver: &mut Receiver<TableEvent>) -> DataCompactionResult {
     let notification = receiver.recv().await.unwrap();
-    if let TableEvent::DataCompaction {
+    if let TableEvent::DataCompactionResult {
         data_compaction_result,
     } = notification
     {
@@ -191,8 +194,8 @@ pub(crate) async fn create_mooncake_snapshot_for_test(
 ) -> (
     u64,
     Option<IcebergSnapshotPayload>,
-    Option<FileIndiceMergePayload>,
-    Option<DataCompactionPayload>,
+    IndexMergeMaintenanceStatus,
+    DataCompactionMaintenanceStatus,
     Vec<String>,
 ) {
     let mooncake_snapshot_created = table.create_snapshot(SnapshotOption {
@@ -263,7 +266,7 @@ pub(crate) async fn create_iceberg_snapshot(
     table.persist_iceberg_snapshot(iceberg_snapshot_payload.unwrap());
     let notification = notify_rx.recv().await.unwrap();
     match notification {
-        TableEvent::IcebergSnapshot {
+        TableEvent::IcebergSnapshotResult {
             iceberg_snapshot_result,
         } => iceberg_snapshot_result,
         _ => {
@@ -321,7 +324,7 @@ pub(crate) async fn create_mooncake_and_persist_for_data_compaction_for_test(
         .unwrap();
 
     assert!(iceberg_snapshot_payload.is_none());
-    let data_compaction_payload = data_compaction_payload.unwrap();
+    let data_compaction_payload = data_compaction_payload.take_payload().unwrap();
 
     // Perform and block wait data compaction.
     table.perform_data_compaction(data_compaction_payload);
@@ -386,7 +389,7 @@ pub(crate) async fn create_mooncake_and_iceberg_snapshot_for_index_merge_for_tes
         .unwrap();
 
     assert!(iceberg_snapshot_payload.is_none());
-    let file_indice_merge_payload = file_indice_merge_payload.unwrap();
+    let file_indice_merge_payload = file_indice_merge_payload.take_payload().unwrap();
 
     table.perform_index_merge(file_indice_merge_payload);
     let index_merge_result = sync_index_merge(receiver).await;
@@ -441,9 +444,41 @@ pub(crate) async fn sync_read_request_for_test(
     receiver: &mut Receiver<TableEvent>,
 ) {
     let notification = receiver.recv().await.unwrap();
-    if let TableEvent::ReadRequest { cache_handles } = notification {
+    if let TableEvent::ReadRequestCompletion { cache_handles } = notification {
         table.set_read_request_res(cache_handles);
     } else {
         panic!("Receive other notifications other than read request")
     }
+}
+
+pub(crate) async fn alter_table_and_persist_to_iceberg(
+    table: &mut MooncakeTable,
+    notify_rx: &mut Receiver<TableEvent>,
+) -> Arc<MooncakeTableMetadata> {
+    table.force_empty_iceberg_payload();
+    // Create a mooncake and iceberg snapshot to reflect both data files and schema changes.
+    let (_, iceberg_snapshot_payload, _, _, _) =
+        create_mooncake_snapshot_for_test(table, notify_rx).await;
+    if let Some(mut iceberg_snapshot_payload) = iceberg_snapshot_payload {
+        let alter_table_request = AlterTableRequest {
+            new_columns: vec![],
+            dropped_columns: vec!["age".to_string()],
+        };
+        let new_table_metadata = table.alter_table(alter_table_request);
+        iceberg_snapshot_payload.new_table_schema = Some(new_table_metadata.clone());
+        let iceberg_snapshot_result =
+            create_iceberg_snapshot(table, Some(iceberg_snapshot_payload), notify_rx).await;
+        table.set_iceberg_snapshot_res(iceberg_snapshot_result.unwrap());
+        new_table_metadata
+    } else {
+        panic!("Iceberg snapshot payload is not set");
+    }
+}
+
+pub(crate) async fn alter_table(table: &mut MooncakeTable) {
+    let alter_table_request = AlterTableRequest {
+        new_columns: vec![],
+        dropped_columns: vec!["age".to_string()],
+    };
+    table.alter_table(alter_table_request);
 }

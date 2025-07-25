@@ -1,8 +1,10 @@
 mod error;
 
+use arrow_ipc::writer::StreamWriter;
 pub use error::{Error, Result};
 use moonlink_backend::MoonlinkBackend;
-use moonlink_rpc::{read, write, Request};
+use moonlink_metadata_store::SqliteMetadataStore;
+use moonlink_rpc::{read, write, Request, Table};
 use std::collections::HashMap;
 use std::io::ErrorKind::{BrokenPipe, ConnectionReset, UnexpectedEof};
 use std::sync::Arc;
@@ -10,9 +12,13 @@ use tokio::fs;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 
-pub async fn start(base_path: String, metadata_store_uris: Vec<String>) -> Result<()> {
+pub async fn start(base_path: String) -> Result<()> {
     let mut sigterm = signal(SignalKind::terminate()).unwrap();
-    let backend = MoonlinkBackend::new(base_path.clone(), metadata_store_uris).await?;
+    let sqlite_metadata_accessor = SqliteMetadataStore::new_with_directory(&base_path)
+        .await
+        .unwrap();
+    let backend =
+        MoonlinkBackend::new(base_path.clone(), Box::new(sqlite_metadata_accessor)).await?;
     let backend = Arc::new(backend);
     let socket_path = std::path::PathBuf::from(base_path).join("moonlink.sock");
     if fs::metadata(&socket_path).await.is_ok() {
@@ -59,12 +65,11 @@ async fn handle_stream(
             Request::CreateTable {
                 database_id,
                 table_id,
-                dst_uri,
                 src,
                 src_uri,
             } => {
                 backend
-                    .create_table(database_id, table_id, dst_uri, src, src_uri)
+                    .create_table(database_id, table_id, src, src_uri)
                     .await
                     .unwrap();
                 write(&mut stream, &()).await?;
@@ -74,6 +79,40 @@ async fn handle_stream(
                 table_id,
             } => {
                 backend.drop_table(database_id, table_id).await;
+                write(&mut stream, &()).await?;
+            }
+            Request::GetTableSchema {
+                database_id,
+                table_id,
+            } => {
+                let schema = backend.get_table_schema(database_id, table_id).await?;
+                let writer = StreamWriter::try_new(vec![], &schema)?;
+                let data = writer.into_inner()?;
+                write(&mut stream, &data).await?;
+            }
+            Request::ListTables {} => {
+                let tables = backend.list_tables().await?;
+                let tables: Vec<Table> = tables
+                    .into_iter()
+                    .map(|table| Table {
+                        database_id: table.database_id,
+                        table_id: table.table_id,
+                        commit_lsn: table.commit_lsn,
+                        flush_lsn: table.flush_lsn,
+                        iceberg_warehouse_location: table.iceberg_warehouse_location,
+                    })
+                    .collect();
+                write(&mut stream, &tables).await?;
+            }
+            Request::OptimizeTable {
+                database_id,
+                table_id,
+                mode,
+            } => {
+                backend
+                    .optimize_table(database_id, table_id, &mode)
+                    .await
+                    .unwrap();
                 write(&mut stream, &()).await?;
             }
             Request::ScanTableBegin {

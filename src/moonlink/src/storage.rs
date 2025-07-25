@@ -9,6 +9,8 @@ pub(crate) mod mooncake_table;
 pub(crate) mod parquet_utils;
 pub(crate) mod path_utils;
 pub(crate) mod storage_utils;
+#[allow(dead_code)]
+pub(crate) mod wal;
 
 pub use crate::event_sync::EventSyncReceiver;
 pub use cache::object_storage::cache_config::ObjectStorageCacheConfig;
@@ -24,6 +26,8 @@ pub use mooncake_table::table_config::TableConfig as MoonlinkTableConfig;
 pub use mooncake_table::table_secret::{
     SecretEntry as MoonlinkTableSecret, SecretType as MoonlinkSecretType,
 };
+pub use mooncake_table::table_status::TableStatus;
+pub use mooncake_table::table_status_reader::TableStatusReader;
 pub use mooncake_table::SnapshotReadOutput;
 pub use mooncake_table::{MooncakeTable, MooncakeTableConfig};
 pub(crate) use mooncake_table::{PuffinDeletionBlobAtRead, SnapshotTableState};

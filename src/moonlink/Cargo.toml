@@ -18,11 +18,13 @@ storage-s3 = [
     "sha1",
     "reqwest",
 ]
+
+# iceberg gcs io doesn't support HMAC key, so have to leverage S3 sdk.
 storage-gcs = [
     "opendal/services-gcs",
+    "opendal/services-s3",
     "iceberg/storage-gcs",
     "iceberg/storage-s3",
-    # iceberg gcs io doesn't support HMAC key, so have to leverage S3 sdk.
     "base64",
     "hmac",
     "sha1",
@@ -31,11 +33,14 @@ storage-gcs = [
 
 bench = []
 
+chaos-test = []
+
 [dependencies]
 ahash = "0.8.11"
 arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
+async-stream = { workspace = true }
 async-trait = { workspace = true }
 backon = { workspace = true }
 base64 = { version = "0.22", optional = true }

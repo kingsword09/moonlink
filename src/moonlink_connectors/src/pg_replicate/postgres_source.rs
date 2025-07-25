@@ -21,11 +21,6 @@ use crate::pg_replicate::{
     table::{ColumnSchema, SrcTableId, TableName, TableSchema},
 };
 
-pub enum TableNamesFrom {
-    Vec(Vec<TableName>),
-    Publication(String),
-}
-
 #[derive(Debug, Error)]
 pub enum PostgresSourceError {
     #[error("cdc stream can only be started with a publication")]
@@ -49,7 +44,6 @@ pub enum PostgresSourceError {
 
 pub struct PostgresSource {
     replication_client: ReplicationClient,
-    table_schemas: HashMap<SrcTableId, TableSchema>,
     slot_name: Option<String>,
     publication: Option<String>,
     confirmed_flush_lsn: PgLsn,
@@ -62,20 +56,25 @@ pub struct CdcStreamConfig {
     pub publication: String,
     pub slot_name: String,
     pub confirmed_flush_lsn: PgLsn,
-    pub table_schemas: HashMap<SrcTableId, TableSchema>,
 }
 
 impl PostgresSource {
     pub async fn new(
         uri: &str,
         slot_name: Option<String>,
-        table_names_from: TableNamesFrom,
+        publication: Option<String>,
+        replication_mode: bool,
     ) -> Result<PostgresSource, PostgresSourceError> {
-        let (mut replication_client, connection) = ReplicationClient::connect_no_tls(uri).await?;
+        assert_eq!(replication_mode, slot_name.is_some());
+        assert_eq!(replication_mode, publication.is_some());
+        let (mut replication_client, connection) =
+            ReplicationClient::connect_no_tls(uri, replication_mode).await?;
         tokio::spawn(
             Self::drive_connection(connection).instrument(info_span!("postgres_client_monitor")),
         );
-        replication_client.begin_readonly_transaction().await?;
+        if replication_mode {
+            replication_client.begin_readonly_transaction().await?;
+        }
         let mut confirmed_flush_lsn = PgLsn::from(0);
         if let Some(ref slot_name) = slot_name {
             confirmed_flush_lsn = replication_client
@@ -83,14 +82,8 @@ impl PostgresSource {
                 .await?
                 .confirmed_flush_lsn;
         }
-        let (table_names, publication) =
-            Self::get_table_names_and_publication(&replication_client, table_names_from).await?;
-        let table_schemas = replication_client
-            .get_table_schemas(&table_names, publication.as_deref())
-            .await?;
         Ok(PostgresSource {
             replication_client,
-            table_schemas,
             publication,
             slot_name,
             confirmed_flush_lsn,
@@ -106,95 +99,97 @@ impl PostgresSource {
         self.slot_name.as_ref()
     }
 
+    pub async fn get_current_wal_lsn(&mut self) -> Result<PgLsn, PostgresSourceError> {
+        self.replication_client
+            .get_current_wal_lsn()
+            .await
+            .map_err(PostgresSourceError::ReplicationClient)
+    }
+
     async fn drive_connection(connection: Connection<Socket, NoTlsStream>) {
         if let Err(e) = connection.await {
             warn!("connection error: {}", e);
         }
     }
 
-    async fn get_table_names_and_publication(
-        replication_client: &ReplicationClient,
-        table_names_from: TableNamesFrom,
-    ) -> Result<(Vec<TableName>, Option<String>), ReplicationClientError> {
-        Ok(match table_names_from {
-            TableNamesFrom::Vec(table_names) => (table_names, None),
-            TableNamesFrom::Publication(publication) => {
-                if !replication_client.publication_exists(&publication).await? {
-                    return Err(ReplicationClientError::MissingPublication(
-                        publication.to_string(),
-                    ));
-                }
-                (
-                    replication_client
-                        .get_publication_table_names(&publication)
-                        .await?,
-                    Some(publication),
-                )
-            }
-        })
+    pub async fn add_table_to_publication(
+        &mut self,
+        table_name: &TableName,
+    ) -> Result<(), PostgresSourceError> {
+        self.replication_client
+            .add_table_to_publication(table_name)
+            .await?;
+        Ok(())
     }
 
-    pub async fn get_table_schemas(&self) -> HashMap<SrcTableId, TableSchema> {
-        self.table_schemas.clone()
+    pub async fn get_row_count(
+        &mut self,
+        table_name: &TableName,
+    ) -> Result<i64, PostgresSourceError> {
+        let row_count = self.replication_client.get_row_count(table_name).await?;
+        Ok(row_count)
     }
 
     pub async fn fetch_table_schema(
-        &mut self,
-        table_name: &str,
+        &self,
+        src_table_id: Option<SrcTableId>,
+        table_name: Option<&str>,
         publication: Option<&str>,
     ) -> Result<TableSchema, PostgresSourceError> {
+        assert!(src_table_id.is_some() || table_name.is_some());
         // Open new connection to get table schema
         let (mut replication_client, connection) =
-            ReplicationClient::connect_no_tls(&self.uri).await?;
+            ReplicationClient::connect_no_tls(&self.uri, false).await?;
         tokio::spawn(
             Self::drive_connection(connection).instrument(info_span!("postgres_client_monitor")),
         );
         replication_client.begin_readonly_transaction().await?;
-        let (schema, name) = TableName::parse_schema_name(table_name);
+        let (src_table_id, table_name) = if src_table_id.is_none() {
+            assert!(table_name.is_some());
+            let (schema, name) = TableName::parse_schema_name(table_name.unwrap());
+            let table_name = TableName { schema, name };
+            (
+                replication_client
+                    .get_src_table_id(&table_name)
+                    .await?
+                    .ok_or(ReplicationClientError::MissingTable(table_name.clone()))?,
+                table_name,
+            )
+        } else {
+            (
+                src_table_id.unwrap(),
+                replication_client
+                    .get_table_name_from_id(src_table_id.unwrap())
+                    .await?,
+            )
+        };
         let table_schema = replication_client
-            .get_table_schema(TableName { schema, name }, publication)
+            .get_table_schema(src_table_id, table_name, publication)
             .await?;
-        // Add the table schema to the source so that we can use it to convert cdc events.
-        self.table_schemas
-            .insert(table_schema.src_table_id, table_schema.clone());
-        debug!(table_name, "fetched table schema");
+        debug!(src_table_id, "fetched table schema");
         Ok(table_schema)
     }
 
-    /// Get table name from table id.
-    /// Precondition: table already exists in pg source, otherwise it panics.
-    pub fn get_table_name_from_id(&self, table_id: u32) -> String {
-        self.table_schemas
-            .get(&table_id)
-            .unwrap()
-            .table_name
-            .get_schema_name()
-    }
-
-    /// Remove table schema from source, and return table name.
-    /// Precondition: table already exists in pg source, otherwise it panics.
-    pub fn remove_table_schema(&mut self, table_id: u32) -> String {
-        let table_schema = self.table_schemas.remove(&table_id).unwrap();
-        table_schema.table_name.get_schema_name()
-    }
-
     pub async fn get_table_copy_stream(
-        &self,
+        &mut self,
         table_name: &TableName,
         column_schemas: &[ColumnSchema],
-    ) -> Result<TableCopyStream, PostgresSourceError> {
+    ) -> Result<(TableCopyStream, PgLsn), PostgresSourceError> {
         debug!("starting table copy stream for table {table_name}");
 
-        let stream = self
+        let (stream, start_lsn) = self
             .replication_client
             .get_table_copy_stream(table_name, column_schemas)
             .await
             .map_err(PostgresSourceError::ReplicationClient)?;
 
-        Ok(TableCopyStream {
-            stream,
-            column_schemas: column_schemas.to_vec(),
-        })
+        Ok((
+            TableCopyStream {
+                stream,
+                column_schemas: column_schemas.to_vec(),
+            },
+            start_lsn,
+        ))
     }
 
     pub async fn commit_transaction(&mut self) -> Result<(), PostgresSourceError> {
@@ -220,7 +215,6 @@ impl PostgresSource {
             publication,
             slot_name,
             confirmed_flush_lsn: self.confirmed_flush_lsn,
-            table_schemas: self.table_schemas.clone(),
         })
     }
 
@@ -245,7 +239,7 @@ impl PostgresSource {
 
         Ok(CdcStream {
             stream,
-            table_schemas: config.table_schemas,
+            table_schemas: HashMap::new(),
             postgres_epoch,
         })
     }

@@ -3,10 +3,11 @@ use crate::storage::filesystem::accessor::base_filesystem_accessor::BaseFileSyst
 use crate::storage::filesystem::accessor::filesystem_accessor::FileSystemAccessor;
 use crate::storage::filesystem::filesystem_config::FileSystemConfig;
 use crate::storage::iceberg::io_utils as iceberg_io_utils;
-use crate::storage::iceberg::moonlink_catalog::PuffinWrite;
+use crate::storage::iceberg::moonlink_catalog::{PuffinWrite, SchemaUpdate};
 use crate::storage::iceberg::puffin_writer_proxy::{
     get_puffin_metadata_and_close, PuffinBlobMetadataProxy,
 };
+use crate::storage::iceberg::table_commit_proxy::TableCommitProxy;
 
 use futures::future::join_all;
 use std::collections::{HashMap, HashSet};
@@ -218,8 +219,14 @@ impl FileCatalog {
                 TableUpdate::RemoveProperties { removals } => {
                     builder = builder.remove_properties(removals)?;
                 }
+                TableUpdate::AddSchema { schema } => {
+                    builder = builder.add_schema(schema.clone());
+                }
+                TableUpdate::SetCurrentSchema { schema_id } => {
+                    builder = builder.set_current_schema(*schema_id)?;
+                }
                 _ => {
-                    unreachable!("Only snapshot updates are expected in this implementation");
+                    unreachable!("Unimplemented table update: {:?}", update);
                 }
             }
         }
@@ -652,5 +659,35 @@ impl Catalog for FileCatalog {
             .metadata(metadata)
             .metadata_location(metadata_filepath)
             .build()
+    }
+
+    async fn register_table(
+        &self,
+        _table: &TableIdent,
+        _metadata_location: String,
+    ) -> IcebergResult<Table> {
+        todo!("register existing table is not supported")
+    }
+}
+
+#[async_trait]
+impl SchemaUpdate for FileCatalog {
+    async fn update_table_schema(
+        &mut self,
+        new_schema: IcebergSchema,
+        table_ident: TableIdent,
+    ) -> IcebergResult<Table> {
+        let (_, old_metadata) = self.load_metadata(&table_ident).await?;
+        let mut metadata_builder = old_metadata.into_builder(/*current_file_location=*/ None);
+        metadata_builder = metadata_builder.add_current_schema(new_schema)?;
+        let metadata_builder_result = metadata_builder.build()?;
+
+        let table_commit_proxy = TableCommitProxy {
+            ident: table_ident,
+            updates: metadata_builder_result.changes,
+            requirements: vec![],
+        };
+        let table_commit = table_commit_proxy.take_as_table_commit();
+        self.update_table(table_commit).await
     }
 }

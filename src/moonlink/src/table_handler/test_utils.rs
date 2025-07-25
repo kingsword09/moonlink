@@ -46,6 +46,7 @@ pub struct TestEnvironment {
     replication_tx: watch::Sender<u64>,
     last_commit_tx: watch::Sender<u64>,
     snapshot_lsn_tx: watch::Sender<u64>,
+    pub(crate) force_snapshot_completion_rx: watch::Receiver<Option<Result<u64>>>,
     pub(crate) table_event_manager: TableEventManager,
     pub(crate) temp_dir: TempDir,
     pub(crate) object_storage_cache: ObjectStorageCache,
@@ -83,11 +84,15 @@ impl TestEnvironment {
             last_commit_rx,
         )));
         let (table_event_sync_sender, table_event_sync_receiver) = create_table_event_syncer();
+        let force_snapshot_completion_rx = table_event_sync_receiver
+            .force_snapshot_completion_rx
+            .clone();
 
         let handler = TableHandler::new(
             mooncake_table,
             table_event_sync_sender,
             replication_rx.clone(),
+            /*event_replay_tx=*/ None,
         )
         .await;
         let table_event_manager =
@@ -103,6 +108,7 @@ impl TestEnvironment {
             replication_tx,
             last_commit_tx,
             snapshot_lsn_tx,
+            force_snapshot_completion_rx,
             table_event_manager,
             temp_dir,
             object_storage_cache,
@@ -210,36 +216,39 @@ impl TestEnvironment {
     }
 
     /// Force an index merge operation, and block wait its completion.
-    pub async fn force_index_merge_and_sync(&mut self) {
+    pub async fn force_index_merge_and_sync(&mut self) -> Result<()> {
         let mut rx = self.table_event_manager.initiate_index_merge().await;
-        rx.recv().await.unwrap().unwrap();
+        rx.recv().await.unwrap()
     }
 
     /// Force a data compaction operation, and block wait its completion.
-    pub async fn force_data_compaction_and_sync(&mut self) {
+    pub async fn force_data_compaction_and_sync(&mut self) -> Result<()> {
         let mut rx = self.table_event_manager.initiate_data_compaction().await;
-        rx.recv().await.unwrap().unwrap();
+        rx.recv().await.unwrap()
     }
 
     /// Force a full table maintenance task operation, and block wait its completion.
-    pub async fn force_full_maintenance_and_sync(&mut self) {
+    pub async fn force_full_maintenance_and_sync(&mut self) -> Result<()> {
         let mut rx = self.table_event_manager.initiate_full_compaction().await;
-        rx.recv().await.unwrap().unwrap();
+        rx.recv().await.unwrap()
     }
 
-    pub async fn flush_table_and_sync(&self, lsn: u64) {
-        self.send_event(TableEvent::Flush { lsn }).await;
-        let (tx, mut rx) = mpsc::channel(1);
-        self.send_event(TableEvent::ForceSnapshot {
-            lsn: Some(lsn),
-            tx: Some(tx),
-        })
-        .await;
-        rx.recv().await.unwrap().unwrap();
+    pub async fn flush_table_and_sync(&mut self, lsn: u64) {
+        self.send_event(TableEvent::CommitFlush { lsn, xact_id: None })
+            .await;
+        self.send_event(TableEvent::ForceSnapshot { lsn: Some(lsn) })
+            .await;
+        TableEventManager::synchronize_force_snapshot_request(
+            self.force_snapshot_completion_rx.clone(),
+            lsn,
+        )
+        .await
+        .unwrap();
     }
 
     pub async fn flush_table(&self, lsn: u64) {
-        self.send_event(TableEvent::Flush { lsn }).await;
+        self.send_event(TableEvent::CommitFlush { lsn, xact_id: None })
+            .await;
     }
 
     pub async fn stream_flush(&self, xact_id: u32) {
@@ -288,7 +297,7 @@ impl TestEnvironment {
     pub async fn verify_snapshot(&self, target_lsn: u64, expected_ids: &[i32]) {
         check_read_snapshot(
             self.read_state_manager.as_ref().unwrap(),
-            target_lsn,
+            Some(target_lsn),
             expected_ids,
         )
         .await;
@@ -296,7 +305,7 @@ impl TestEnvironment {
 
     // --- Lifecycle Helper ---
     pub async fn shutdown(&mut self) {
-        self.send_event(TableEvent::Shutdown).await;
+        self.send_event(TableEvent::DropTable).await;
         if let Some(handle) = self.handler._event_handle.take() {
             handle.await.expect("TableHandler task panicked");
         }
@@ -306,16 +315,16 @@ impl TestEnvironment {
 /// Verifies the state of a read snapshot against expected row IDs.
 pub async fn check_read_snapshot(
     read_manager: &ReadStateManager,
-    target_lsn: u64,
+    target_lsn: Option<u64>,
     expected_ids: &[i32],
 ) {
-    let read_state = read_manager.try_read(Some(target_lsn)).await.unwrap();
+    let read_state = read_manager.try_read(target_lsn).await.unwrap();
     let (data_files, puffin_files, deletion_vectors, position_deletes) =
         decode_read_state_for_testing(&read_state);
 
     if data_files.is_empty() && !expected_ids.is_empty() {
         unreachable!(
-            "No snapshot files returned for LSN {} when rows (IDs: {:?}) were expected. Expected files because expected_ids is not empty.",
+            "No snapshot files returned for LSN {:?} when rows (IDs: {:?}) were expected. Expected files because expected_ids is not empty.",
             target_lsn, expected_ids
         );
     }
@@ -329,8 +338,8 @@ pub async fn check_read_snapshot(
     .await;
 }
 
-/// Test util function to load all arrow batch from the given local parquet file.
-pub(crate) async fn load_arrow_batch(filepath: &str) -> RecordBatch {
+/// Test util function to load one arrow batch from the given local parquet file.
+pub(crate) async fn load_one_arrow_batch(filepath: &str) -> RecordBatch {
     let file_io = FileIOBuilder::new_fs_io().build().unwrap();
     let input_file = file_io.new_input(filepath).unwrap();
     let input_file_metadata = input_file.metadata().await.unwrap();

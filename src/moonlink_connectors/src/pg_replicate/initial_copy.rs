@@ -4,6 +4,7 @@ use crate::pg_replicate::util::PostgresTableRow;
 use crate::Result;
 use futures::{pin_mut, Stream, StreamExt};
 use moonlink::TableEvent;
+use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tokio_postgres::types::PgLsn;
@@ -18,22 +19,8 @@ pub struct CopyProgress {
     pub rows_copied: u64,
 }
 
-/// Start the copy for `table_id` using `event_sender`
-/// to deliver the copied rows.
-pub async fn initial_table_copy(
-    table_id: SrcTableId,
-    schema: TableSchema,
-    source: PostgresSource,
-    event_sender: &Sender<TableEvent>,
-) -> Result<CopyProgress> {
-    let stream = source
-        .get_table_copy_stream(&schema.table_name, &schema.column_schemas)
-        .await?;
-    copy_table_stream_impl(schema, stream, event_sender).await
-}
-
 /// Reads rows from `stream` and sends them to the provided `event_sender`.
-async fn copy_table_stream_impl(
+pub async fn copy_table_stream_impl(
     table_schema: TableSchema,
     mut stream: TableCopyStream,
     event_sender: &Sender<TableEvent>,
@@ -137,9 +124,11 @@ mod tests {
 
     /// Create a simple test error for testing error propagation
     fn make_test_error() -> crate::Error {
-        crate::Error::PostgresSourceError(
-            crate::pg_replicate::postgres_source::PostgresSourceError::MissingPublication,
-        )
+        crate::Error::PostgresSourceError {
+            source: Arc::new(
+                crate::pg_replicate::postgres_source::PostgresSourceError::MissingPublication,
+            ),
+        }
     }
 
     //----------------------------------------------------------------------

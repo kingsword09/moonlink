@@ -2,11 +2,12 @@ use crate::pg_replicate::replication_state::ReplicationState;
 use crate::pg_replicate::table::TableSchema;
 use crate::pg_replicate::util::postgres_schema_to_moonlink_schema;
 use crate::{Error, Result};
+use moonlink::event_sync::create_table_event_syncer;
 use moonlink::{
     EventSyncReceiver, EventSyncSender, FileSystemAccessor, FileSystemConfig, IcebergTableConfig,
     MooncakeTable, MooncakeTableConfig, MoonlinkSecretType, MoonlinkTableConfig,
     MoonlinkTableSecret, ObjectStorageCache, ReadStateManager, TableEvent, TableEventManager,
-    TableHandler,
+    TableHandler, TableStatusReader,
 };
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -24,26 +25,9 @@ pub struct TableResources {
     pub event_sender: Sender<TableEvent>,
     pub read_state_manager: ReadStateManager,
     pub table_event_manager: TableEventManager,
+    pub table_status_reader: TableStatusReader,
     pub commit_lsn_tx: watch::Sender<u64>,
     pub flush_lsn_rx: watch::Receiver<u64>,
-}
-
-/// Create table event manager sender and receiver.
-fn create_table_event_syncer() -> (EventSyncSender, EventSyncReceiver) {
-    let (drop_table_completion_tx, drop_table_completion_rx) = oneshot::channel();
-    let (flush_lsn_tx, flush_lsn_rx) = watch::channel(0u64);
-    let (table_maintenance_completion_tx, _) = broadcast::channel(64usize);
-    let event_sync_sender = EventSyncSender {
-        drop_table_completion_tx,
-        flush_lsn_tx,
-        table_maintenance_completion_tx: table_maintenance_completion_tx.clone(),
-    };
-    let event_sync_receiver = EventSyncReceiver {
-        drop_table_completion_rx,
-        flush_lsn_rx,
-        table_maintenance_completion_tx,
-    };
-    (event_sync_sender, event_sync_receiver)
 }
 
 /// Util function to delete and re-create the given directory.
@@ -53,7 +37,7 @@ async fn recreate_directory(dir: &PathBuf) -> Result<()> {
         Ok(()) => {}
         Err(e) => {
             if e.kind() != ErrorKind::NotFound {
-                return Err(Error::Io(e));
+                return Err(e.into());
             }
         }
     }
@@ -65,6 +49,7 @@ async fn recreate_directory(dir: &PathBuf) -> Result<()> {
 /// Build all components needed to replicate `table_schema`.
 pub async fn build_table_components(
     mooncake_table_id: String,
+    database_id: u32,
     table_id: u32,
     table_schema: &TableSchema,
     base_path: &String,
@@ -103,9 +88,16 @@ pub async fn build_table_components(
     let (commit_lsn_tx, commit_lsn_rx) = watch::channel(0u64);
     let read_state_manager =
         ReadStateManager::new(&table, replication_state.subscribe(), commit_lsn_rx);
+    let table_status_reader =
+        TableStatusReader::new(database_id, table_id, &iceberg_table_config, &table);
     let (event_sync_sender, event_sync_receiver) = create_table_event_syncer();
-    let table_handler =
-        TableHandler::new(table, event_sync_sender, replication_state.subscribe()).await;
+    let table_handler = TableHandler::new(
+        table,
+        event_sync_sender,
+        replication_state.subscribe(),
+        /*event_replay_tx=*/ None,
+    )
+    .await;
     let flush_lsn_rx = event_sync_receiver.flush_lsn_rx.clone();
     let table_event_manager =
         TableEventManager::new(table_handler.get_event_sender(), event_sync_receiver);
@@ -114,6 +106,7 @@ pub async fn build_table_components(
     let table_resource = TableResources {
         event_sender,
         read_state_manager,
+        table_status_reader,
         table_event_manager,
         commit_lsn_tx,
         flush_lsn_rx,

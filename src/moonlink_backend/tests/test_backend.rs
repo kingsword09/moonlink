@@ -6,6 +6,7 @@ mod tests {
         current_wal_lsn, ids_from_state, smoke_create_and_insert, DatabaseId, TableId, TestGuard,
         TestGuardMode, TABLE_ID,
     };
+    use moonlink::TableStatus;
     use moonlink_backend::MoonlinkBackend;
     use moonlink_metadata_store::{base_metadata_store::MetadataStoreTrait, SqliteMetadataStore};
 
@@ -13,7 +14,6 @@ mod tests {
     use std::collections::HashSet;
 
     const SRC_URI: &str = "postgresql://postgres:postgres@postgres:5432/postgres";
-    const DST_URI: &str = "postgresql://postgres:postgres@postgres:5432/postgres";
 
     // ───────────────────────────── Tests ─────────────────────────────
 
@@ -150,6 +150,17 @@ mod tests {
             .join("metadata");
         assert!(meta_dir.exists());
         assert!(meta_dir.read_dir().unwrap().next().is_some());
+
+        // Check table status.
+        let table_statuses = backend.list_tables().await.unwrap();
+        let expected_table_status = TableStatus {
+            database_id: guard.database_id,
+            table_id: TABLE_ID as u32,
+            commit_lsn: lsn,
+            flush_lsn: Some(lsn),
+            iceberg_warehouse_location: guard.tmp().unwrap().path().to_str().unwrap().to_string(),
+        };
+        assert_eq!(table_statuses, vec![expected_table_status]);
     }
 
     /// Test that replication connections are properly cleaned up and can be recreated.
@@ -191,7 +202,6 @@ mod tests {
             .create_table(
                 guard.database_id,
                 TABLE_ID,
-                DST_URI.to_string(),
                 /*table_name=*/ "public.repl_test".to_string(),
                 SRC_URI.to_string(),
             )
@@ -299,7 +309,6 @@ mod tests {
             .create_table(
                 guard.database_id,
                 TABLE_ID,
-                DST_URI.to_string(),
                 "public.recovery".to_string(),
                 SRC_URI.to_string(),
             )
@@ -330,16 +339,18 @@ mod tests {
         drop(guard);
 
         // Attempt recovery logic.
-        let backend = MoonlinkBackend::<DatabaseId, TableId>::new(
-            testing_directory_before_recovery
-                .path()
-                .to_str()
-                .unwrap()
-                .to_string(),
-            /*metadata_store_uris=*/ vec![],
-        )
-        .await
-        .unwrap();
+        let base_path = testing_directory_before_recovery
+            .path()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let sqlite_metadata_store = SqliteMetadataStore::new_with_directory(&base_path)
+            .await
+            .unwrap();
+        let backend =
+            MoonlinkBackend::<DatabaseId, TableId>::new(base_path, Box::new(sqlite_metadata_store))
+                .await
+                .unwrap();
         let ids = ids_from_state(
             &backend
                 .scan_table(database_id, TABLE_ID, Some(lsn))

@@ -9,6 +9,7 @@ use crate::storage::iceberg::index::FileIndexBlob;
 use crate::storage::iceberg::io_utils as iceberg_io_utils;
 use crate::storage::iceberg::puffin_utils;
 use crate::storage::iceberg::puffin_utils::PuffinBlobRef;
+use crate::storage::iceberg::schema_utils;
 use crate::storage::iceberg::table_manager::{PersistenceFileParams, PersistenceResult};
 use crate::storage::index::FileIndex as MooncakeFileIndex;
 use crate::storage::mooncake_table::delete_vector::BatchDeletionVector;
@@ -42,6 +43,14 @@ pub struct DataFileImportResult {
 }
 
 impl IcebergTableManager {
+    /// Validate schema consistency at store operation.
+    async fn validate_schema_consistency_at_store(
+        &self,
+        _snapshot_payload: &IcebergSnapshotPayload,
+    ) {
+        schema_utils::assert_table_schema_id(self.iceberg_table.as_ref().unwrap());
+    }
+
     /// Util function to get unique table file id for the deletion vector puffin file.
     ///
     /// Notice: only deletion vector puffin generates new file ids.
@@ -434,6 +443,10 @@ impl IcebergTableManager {
         // Initialize iceberg table on access.
         self.initialize_iceberg_table_for_once().await?;
 
+        // Validate schema consistency before persistence operation.
+        self.validate_schema_consistency_at_store(&snapshot_payload)
+            .await;
+
         let new_data_files = take_data_files_to_import(&mut snapshot_payload);
         let old_data_files = take_data_files_to_remove(&mut snapshot_payload);
         let new_file_indices = take_file_indices_to_import(&mut snapshot_payload);
@@ -463,20 +476,33 @@ impl IcebergTableManager {
             )
             .await?;
 
-        // Only start append action when there're new data files.
+        // Update snapshot summary properties.
+        let mut snapshot_properties = HashMap::<String, String>::from([(
+            MOONCAKE_TABLE_FLUSH_LSN.to_string(),
+            snapshot_payload.flush_lsn.to_string(),
+        )]);
+        if let Some(wal_metadata) = snapshot_payload.wal_persistence_metadata {
+            snapshot_properties.insert(
+                MOONCAKE_WAL_METADATA.to_string(),
+                serde_json::to_string(&wal_metadata).unwrap(),
+            );
+        }
+
         let mut txn = Transaction::new(self.iceberg_table.as_ref().unwrap());
+        let action = txn.fast_append();
+        // Only start append action when there're new data files.
         if !data_file_import_result.new_iceberg_data_files.is_empty() {
-            let action = txn.fast_append();
             let action = action.add_data_files(data_file_import_result.new_iceberg_data_files);
+            let action = action.set_snapshot_properties(snapshot_properties);
+            txn = action.apply(txn)?;
+        }
+        // Start an append transaction only to add snapshot properties.
+        else {
+            let action = action.set_snapshot_properties(snapshot_properties);
             txn = action.apply(txn)?;
         }
 
-        // Persist flush lsn at table property
-        let action = txn.update_table_properties().set(
-            MOONCAKE_TABLE_FLUSH_LSN.to_string(),
-            snapshot_payload.flush_lsn.to_string(),
-        );
-        txn = action.apply(txn)?;
+        // Commit the transaction.
         let updated_iceberg_table = txn.commit(&*self.catalog).await?;
         self.iceberg_table = Some(updated_iceberg_table);
 

@@ -4,12 +4,13 @@ mod logging;
 pub mod mooncake_table_id;
 mod recovery_utils;
 
+use arrow_schema::Schema;
 pub use error::{Error, Result};
 use mooncake_table_id::MooncakeTableId;
 pub use moonlink::ReadState;
+use moonlink::{TableEventManager, TableStatus};
 use moonlink_connectors::ReplicationManager;
 use moonlink_metadata_store::base_metadata_store::MetadataStoreTrait;
-use moonlink_metadata_store::SqliteMetadataStore;
 use std::hash::Hash;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -29,27 +30,25 @@ where
     D: std::convert::From<u32> + Eq + Hash + Clone + std::fmt::Display,
     T: std::convert::From<u32> + Eq + Hash + Clone + std::fmt::Display,
 {
-    // # Arguments
-    //
-    // * metadata_store_uris: connection strings for metadata storage database.
-    //
-    // TODO(hjiang): [`_metadata_store_uris`] is not needed for moonlink self-managed database.
-    pub async fn new(base_path: String, _metadata_store_uris: Vec<String>) -> Result<Self> {
+    pub async fn new(
+        base_path: String,
+        metadata_store_accessor: Box<dyn MetadataStoreTrait>,
+    ) -> Result<Self> {
         logging::init_logging();
 
-        // Create a metadata storage accessor.
-        // TODO(hjiang): pg_mooncake will pass in.
-        let metadata_store_accessor =
-            Box::new(SqliteMetadataStore::new_with_directory(&base_path).await?);
+        // Canonicalize moonlink backend directory, so all paths stored are of absolute path.
+        tokio::fs::create_dir_all(&base_path).await?;
+        let base_path = tokio::fs::canonicalize(base_path).await?;
+        let base_path_str = base_path.to_str().unwrap();
 
         // Re-create directory for temporary files directory and read cache files directory under base directory.
-        let temp_files_dir = file_utils::get_temp_file_directory_under_base(&base_path);
-        let read_cache_files_dir = file_utils::get_cache_directory_under_base(&base_path);
+        let temp_files_dir = file_utils::get_temp_file_directory_under_base(base_path_str);
+        let read_cache_files_dir = file_utils::get_cache_directory_under_base(base_path_str);
         file_utils::recreate_directory(temp_files_dir.to_str().unwrap()).unwrap();
         file_utils::recreate_directory(read_cache_files_dir.to_str().unwrap()).unwrap();
 
         let mut replication_manager = ReplicationManager::new(
-            base_path.clone(),
+            base_path_str.to_string(),
             temp_files_dir.to_str().unwrap().to_string(),
             file_utils::create_default_object_storage_cache(read_cache_files_dir),
         );
@@ -64,7 +63,7 @@ where
 
     /// Create an iceberg snapshot with the given LSN, return when the a snapshot is successfully created.
     pub async fn create_snapshot(&self, database_id: D, table_id: T, lsn: u64) -> Result<()> {
-        let mut rx = {
+        let rx = {
             let mut manager = self.replication_manager.write().await;
             let mooncake_table_id = MooncakeTableId {
                 database_id,
@@ -73,20 +72,17 @@ where
             let writer = manager.get_table_event_manager(&mooncake_table_id);
             writer.initiate_snapshot(lsn).await
         };
-        rx.recv().await.unwrap()?;
+        TableEventManager::synchronize_force_snapshot_request(rx, lsn).await?;
         Ok(())
     }
 
     /// # Arguments
     ///
     /// * src_uri: connection string for source database (row storage database).
-    ///
-    /// TODO(hjiang): [`_metadata_store_uris`] is not needed for moonlink self-managed database.
     pub async fn create_table(
         &self,
         database_id: D,
         table_id: T,
-        _metadata_store_uri: String,
         src_table_name: String,
         src_uri: String,
     ) -> Result<()> {
@@ -105,6 +101,7 @@ where
                 .add_table(
                     &src_uri,
                     mooncake_table_id,
+                    database_id,
                     table_id,
                     &src_table_name,
                     /*override_iceberg_filesystem_config=*/ None,
@@ -151,26 +148,32 @@ where
             .unwrap()
     }
 
-    pub async fn scan_table(
-        &self,
-        database_id: D,
-        table_id: T,
-        lsn: Option<u64>,
-    ) -> Result<Arc<ReadState>> {
-        let read_state = {
+    /// Get the current mooncake table schema.
+    pub async fn get_table_schema(&self, database_id: D, table_id: T) -> Result<Arc<Schema>> {
+        let table_schema = {
             let manager = self.replication_manager.read().await;
             let mooncake_table_id = MooncakeTableId {
                 database_id,
                 table_id,
             };
-            let table_reader = manager.get_table_reader(&mooncake_table_id);
-            table_reader.try_read(lsn).await?
+            let table_state_reader = manager.get_table_state_reader(&mooncake_table_id);
+            table_state_reader.get_current_table_schema().await?
         };
-
-        Ok(read_state.clone())
+        Ok(table_schema)
     }
 
-    /// Perform a table maintaince operation based on requested mode.
+    /// List all tables at moonlink backend, and return their states.
+    pub async fn list_tables(&self) -> Result<Vec<TableStatus>> {
+        let mut table_states = vec![];
+        let manager = self.replication_manager.read().await;
+        let table_state_readers = manager.get_table_status_readers();
+        for cur_table_state_reader in table_state_readers.into_iter() {
+            table_states.push(cur_table_state_reader.get_current_table_state().await?);
+        }
+        Ok(table_states)
+    }
+
+    /// Perform a table maintaince operation based on requested mode, block wait until maintenance results have been persisted.
     /// Notice, it's only exposed for debugging, testing and admin usage.
     ///
     /// There're currently three modes supported:
@@ -200,6 +203,25 @@ where
 
         rx.recv().await.unwrap().unwrap();
         Ok(())
+    }
+
+    pub async fn scan_table(
+        &self,
+        database_id: D,
+        table_id: T,
+        lsn: Option<u64>,
+    ) -> Result<Arc<ReadState>> {
+        let read_state = {
+            let manager = self.replication_manager.read().await;
+            let mooncake_table_id = MooncakeTableId {
+                database_id,
+                table_id,
+            };
+            let table_reader = manager.get_table_reader(&mooncake_table_id);
+            table_reader.try_read(lsn).await?
+        };
+
+        Ok(read_state.clone())
     }
 
     /// Gracefully shutdown a replication connection identified by its URI.

@@ -25,8 +25,12 @@ use iceberg::writer::file_writer::location_generator::LocationGenerator;
 use iceberg::{NamespaceIdent, Result as IcebergResult, TableIdent};
 use uuid::Uuid;
 
-/// Key for iceberg table property, to record flush lsn.
+/// TODO(hjiang): store snapshot property in snapshot summary, instead of table property.
+///
+/// Key for iceberg snapshot property, to record flush lsn.
 pub(super) const MOONCAKE_TABLE_FLUSH_LSN: &str = "moonlink.table-flush-lsn";
+/// Key for iceberg snapshot property, to record WAL persistence metadata.
+pub(super) const MOONCAKE_WAL_METADATA: &str = "moonlink.wal-metadata";
 /// Used to represent uninitialized deletion vector.
 /// TODO(hjiang): Consider using `Option<>` to represent uninitialized, which is more rust-idiometic.
 pub(super) const UNINITIALIZED_BATCH_DELETION_VECTOR_MAX_ROW: usize = 0;
@@ -126,6 +130,14 @@ impl IcebergTableManager {
         })
     }
 
+    /// Get table identity.
+    pub(super) fn get_table_ident(&self) -> TableIdent {
+        TableIdent {
+            namespace: NamespaceIdent::from_strs(&self.config.namespace).unwrap(),
+            name: self.config.table_name.clone(),
+        }
+    }
+
     /// Get a unique puffin filepath under table warehouse uri.
     pub(super) fn get_unique_deletion_vector_filepath(&self) -> String {
         let location_generator =
@@ -180,10 +192,20 @@ impl IcebergTableManager {
 impl TableManager for IcebergTableManager {
     async fn sync_snapshot(
         &mut self,
-        snapshot_payload: IcebergSnapshotPayload,
+        mut snapshot_payload: IcebergSnapshotPayload,
         file_params: PersistenceFileParams,
     ) -> IcebergResult<PersistenceResult> {
-        self.sync_snapshot_impl(snapshot_payload, file_params).await
+        // Persist data files, deletion vectors, and file indices.
+        let new_table_schema = std::mem::take(&mut snapshot_payload.new_table_schema);
+        let persistence_result = self
+            .sync_snapshot_impl(snapshot_payload, file_params)
+            .await?;
+
+        // Perform schema evolution if necessary.
+        if let Some(new_table_schema) = new_table_schema {
+            self.alter_table_schema_impl(new_table_schema).await?;
+        }
+        Ok(persistence_result)
     }
 
     async fn load_snapshot_from_table(&mut self) -> IcebergResult<(u32, MooncakeSnapshot)> {

@@ -19,7 +19,9 @@ arrow = { version = "55", default-features = false, features = [
   "canonical_extension_types",
 ] }
 arrow-array = "55"
+arrow-ipc = "55"
 arrow-schema = "55"
+async-stream = "0.3.6"
 async-trait = "0.1"
 backon = { version = "1.5.1" }
 bincode = { version = "2", features = ["serde"] }
@@ -30,7 +32,7 @@ crc32fast = "1"
 fastbloom = "0.12.0"
 futures = { version = "0.3", default-features = false }
 hashbrown = "0.15.3"
-iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "36af3f7ae5202c0d10ef97d35387fa32ec796371", default-features = false, features = [
+iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "b3ea8d1fca14ddc23154615862a62d3e3e56a769", default-features = false, features = [
   "storage-fs",
 ] }
 itertools = { version = "0.14" }
@@ -40,9 +42,7 @@ multimap = { version = "0.10", default-features = false }
 nix = { version = "0.27", default-features = false, features = ["fs"] }
 num-bigint = { version = "0.4" }
 num-traits = "0.2"
-opendal = { version = "0.53", default-features = false, features = [
-  "services-s3",
-] }
+opendal = { version = "0.54", default-features = false }
 parquet = { version = "55", default-features = false, features = [
   "arrow",
   "async",

@@ -1,8 +1,12 @@
+use crate::storage::filesystem::accessor::base_unbuffered_stream_writer::BaseUnbufferedStreamWriter;
 /// This module defines the interface for filesystem accessor.
 use crate::storage::filesystem::accessor::metadata::ObjectMetadata;
 use crate::Result;
 
 use async_trait::async_trait;
+use futures::Stream;
+
+use std::pin::Pin;
 
 #[cfg(test)]
 use mockall::*;
@@ -39,8 +43,24 @@ pub trait BaseFileSystemAccess: std::fmt::Debug + Send + Sync {
     /// Similar to [`read_object`], but return content in string format.
     async fn read_object_as_string(&self, object: &str) -> Result<String>;
 
+    /// Stream read the content for the given object.
+    /// It's suitable for large objects.
+    async fn stream_read(
+        &self,
+        object: &str,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Vec<u8>>> + Send>>>;
+
     /// Write the whole content to the given object.
     async fn write_object(&self, object_filepath: &str, content: Vec<u8>) -> Result<()>;
+
+    /// Return a writer, which used for stream writer.
+    /// Notice: no IO operation is performed under the hood.
+    ///
+    /// TODO(hjiang): Consider to take a [`config`]
+    async fn create_unbuffered_stream_writer(
+        &self,
+        object_filepath: &str,
+    ) -> Result<Box<dyn BaseUnbufferedStreamWriter>>;
 
     /// Delete the given object.
     async fn delete_object(&self, object_filepath: &str) -> Result<()>;

@@ -20,7 +20,7 @@ pub struct ReadState {
     /// Serialized data files and positional deletes for query.
     pub data: Vec<u8>,
     /// Fields related to clean up after query completion.
-    associated_files: Vec<String>,
+    pub(crate) associated_files: Vec<String>,
     /// Cache handles for data files.
     cache_handles: Vec<NonEvictableHandle>,
     // Invariant: [`table_notify`] cannot be `None` if there're involved data files.
@@ -36,7 +36,7 @@ impl Drop for ReadState {
         if let Some(table_notify) = self.table_notify.clone() {
             tokio::spawn(async move {
                 table_notify
-                    .send(TableEvent::ReadRequest { cache_handles })
+                    .send(TableEvent::ReadRequestCompletion { cache_handles })
                     .await
                     .unwrap();
             });
