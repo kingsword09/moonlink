@@ -770,8 +770,14 @@ impl MooncakeTable {
 
             // Record events for flush completion.
             if let Some(event_replay_tx) = event_replay_tx {
-                let table_event =
-                    replay_events::create_flush_event_completion(flush_event_id.unwrap());
+                let table_event = replay_events::create_flush_event_completion(
+                    flush_event_id.unwrap(),
+                    disk_slice_clone
+                        .output_files()
+                        .iter()
+                        .map(|(file, _)| file.file_id)
+                        .collect(),
+                );
                 event_replay_tx
                     .send(MooncakeTableEvent::FlushCompletion(table_event))
                     .unwrap();
@@ -1111,7 +1117,7 @@ impl MooncakeTable {
             // Record events for flush completion.
             if let Some(event_replay_tx) = &self.event_replay_tx {
                 let table_event =
-                    replay_events::create_flush_event_completion(flush_event_id.unwrap());
+                    replay_events::create_flush_event_completion(flush_event_id.unwrap(), vec![]);
                 event_replay_tx
                     .send(MooncakeTableEvent::FlushCompletion(table_event))
                     .unwrap();
