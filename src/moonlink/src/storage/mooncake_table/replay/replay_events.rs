@@ -72,8 +72,6 @@ pub struct FlushEventInitiation {
 pub struct FlushEventCompletion {
     /// Unique event id, assigned globally.
     pub id: BackgroundEventId,
-    /// flushed file ids.
-    pub file_ids: Vec<FileId>,
 }
 
 /// =====================
@@ -282,11 +280,8 @@ pub fn create_flush_event_initiation(
         lsn,
     }
 }
-pub fn create_flush_event_completion(
-    id: BackgroundEventId,
-    file_ids: Vec<FileId>,
-) -> FlushEventCompletion {
-    FlushEventCompletion { id, file_ids }
+pub fn create_flush_event_completion(id: BackgroundEventId) -> FlushEventCompletion {
+    FlushEventCompletion { id }
 }
 /// Create mooncake snapshot events.
 pub fn create_mooncake_snapshot_event_initiation(

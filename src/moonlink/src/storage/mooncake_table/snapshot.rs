@@ -678,7 +678,7 @@ impl SnapshotTableState {
             for (file, file_attrs) in slice.output_files().iter() {
                 ma::assert_gt!(file_attrs.file_size, 0);
                 assert!(task
-                    .new_disk_file_lsn_map
+                    .disk_file_lsn_map
                     .insert(file.file_id(), write_lsn)
                     .is_none());
                 let unique_file_id = self.get_table_unique_file_id(file.file_id());
@@ -759,18 +759,12 @@ impl SnapshotTableState {
         deletions: &[RawDeletionRecord],
         index_lookup_result: Vec<RecordLocation>,
         file_id_to_lsn: &HashMap<FileId, u64>,
-        batch_id_to_lsn: &HashMap<u64, u64>,
     ) -> Vec<ProcessedDeletionRecord> {
         let mut candidates: Vec<RecordLocation> = index_lookup_result
             .into_iter()
             .filter(|loc| {
                 !self.is_deleted(loc)
-                    && Self::is_visible(
-                        loc,
-                        file_id_to_lsn,
-                        batch_id_to_lsn,
-                        deletions.first().unwrap().lsn,
-                    )
+                    && Self::is_visible(loc, file_id_to_lsn, deletions.first().unwrap().lsn)
             })
             .collect();
         // This optimization is important when working with table without primary key.
@@ -842,17 +836,9 @@ impl SnapshotTableState {
         }
     }
 
-    fn is_visible(
-        loc: &RecordLocation,
-        file_id_to_lsn: &HashMap<FileId, u64>,
-        batch_id_to_lsn: &HashMap<u64, u64>,
-        lsn: u64,
-    ) -> bool {
+    fn is_visible(loc: &RecordLocation, file_id_to_lsn: &HashMap<FileId, u64>, lsn: u64) -> bool {
         match loc {
-            RecordLocation::MemoryBatch(batch_id, _) => {
-                batch_id_to_lsn.get(batch_id).is_none()
-                    || batch_id_to_lsn.get(batch_id).unwrap() <= &lsn
-            }
+            RecordLocation::MemoryBatch(_, _) => true,
             RecordLocation::DiskFile(file_id, _) => {
                 file_id_to_lsn.get(file_id).is_none()
                     || file_id_to_lsn.get(file_id).unwrap() <= &lsn
@@ -1002,8 +988,7 @@ impl SnapshotTableState {
                 .match_deletions_with_identical_key_and_lsn(
                     deletions,
                     lookup_result,
-                    &task.new_disk_file_lsn_map,
-                    &task.flushing_batch_lsn_map,
+                    &task.disk_file_lsn_map,
                 )
                 .await;
             self.add_processed_deletion(processed_deletions, task.commit_lsn_baseline);

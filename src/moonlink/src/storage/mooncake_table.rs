@@ -215,16 +215,12 @@ pub struct SnapshotTask {
     /// ---- States not recorded by mooncake snapshot ----
     ///
     new_disk_slices: Vec<DiskSliceWriter>,
+    disk_file_lsn_map: HashMap<FileId, u64>,
     new_deletions: Vec<RawDeletionRecord>,
     /// Pair of <batch id, record batch, optional deletion vector for streaming batches>.
     new_record_batches: Vec<RecordBatchWithDeletionVector>,
     new_rows: Option<SharedRowBufferSnapshot>,
     new_mem_indices: Vec<Arc<MemIndex>>,
-
-    // Prevent attempting to delete a row created after the deletion's lsn.
-    new_disk_file_lsn_map: HashMap<FileId, u64>,
-    flushing_batch_lsn_map: HashMap<u64, u64>,
-
     /// Assigned (non-zero) after a commit event.
     /// Inherits the previous snapshot tasks commit LSN baseline on snapshot.
     commit_lsn_baseline: u64,
@@ -265,8 +261,7 @@ impl SnapshotTask {
         Self {
             mooncake_table_config,
             new_disk_slices: Vec::new(),
-            new_disk_file_lsn_map: HashMap::new(),
-            flushing_batch_lsn_map: HashMap::new(),
+            disk_file_lsn_map: HashMap::new(),
             new_deletions: Vec::new(),
             new_record_batches: Vec::new(),
             new_rows: None,
@@ -292,7 +287,7 @@ impl SnapshotTask {
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         if !self.new_disk_slices.is_empty() {
-            assert!(!self.new_disk_file_lsn_map.is_empty());
+            assert!(!self.disk_file_lsn_map.is_empty());
             assert!(self.new_flush_lsn.is_some());
             return false;
         }
@@ -722,16 +717,6 @@ impl MooncakeTable {
                     deletion_vector: None,
                 });
         }
-        for batch in batches.iter() {
-            assert!(
-                self.next_snapshot_task
-                    .flushing_batch_lsn_map
-                    .insert(batch.id, lsn)
-                    .is_none(),
-                "batch id {} already in flushing_batch_lsn_map",
-                batch.id
-            );
-        }
         self.next_snapshot_task.new_mem_indices.push(index.clone());
 
         let path = self.metadata.path.clone();
@@ -775,14 +760,8 @@ impl MooncakeTable {
 
             // Record events for flush completion.
             if let Some(event_replay_tx) = event_replay_tx {
-                let table_event = replay_events::create_flush_event_completion(
-                    flush_event_id.unwrap(),
-                    disk_slice_clone
-                        .output_files()
-                        .iter()
-                        .map(|(file, _)| file.file_id)
-                        .collect(),
-                );
+                let table_event =
+                    replay_events::create_flush_event_completion(flush_event_id.unwrap());
                 event_replay_tx
                     .send(MooncakeTableEvent::FlushCompletion(table_event))
                     .unwrap();
@@ -1122,7 +1101,7 @@ impl MooncakeTable {
             // Record events for flush completion.
             if let Some(event_replay_tx) = &self.event_replay_tx {
                 let table_event =
-                    replay_events::create_flush_event_completion(flush_event_id.unwrap(), vec![]);
+                    replay_events::create_flush_event_completion(flush_event_id.unwrap());
                 event_replay_tx
                     .send(MooncakeTableEvent::FlushCompletion(table_event))
                     .unwrap();
