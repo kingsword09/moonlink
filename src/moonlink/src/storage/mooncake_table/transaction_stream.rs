@@ -346,6 +346,13 @@ impl MooncakeTable {
                 },
             );
         }
+        if let Some(lsn) = lsn {
+            for batch in batches.iter() {
+                self.next_snapshot_task
+                    .flushing_batch_lsn_map
+                    .insert(batch.id, lsn);
+            }
+        }
 
         // Add mem index to stream state
         let index = Arc::new(index);
@@ -524,6 +531,9 @@ impl MooncakeTable {
                     deletions: batch.batch.deletions.clone(),
                 },
             );
+            self.next_snapshot_task
+                .flushing_batch_lsn_map
+                .insert(batch.id, lsn);
         }
         stream_state
             .stream_indices
@@ -611,7 +621,7 @@ impl SnapshotTableState {
                 TransactionStreamOutput::Commit(commit) => {
                     // Integrate files into current snapshot and import into object storage cache.
                     for (file, mut disk_file_entry) in commit.flushed_files.into_iter() {
-                        task.disk_file_lsn_map
+                        task.new_disk_file_lsn_map
                             .insert(file.file_id(), commit.commit_lsn);
 
                         // Import data files into cache.

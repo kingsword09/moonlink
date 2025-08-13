@@ -215,12 +215,16 @@ pub struct SnapshotTask {
     /// ---- States not recorded by mooncake snapshot ----
     ///
     new_disk_slices: Vec<DiskSliceWriter>,
-    disk_file_lsn_map: HashMap<FileId, u64>,
     new_deletions: Vec<RawDeletionRecord>,
     /// Pair of <batch id, record batch, optional deletion vector for streaming batches>.
     new_record_batches: Vec<RecordBatchWithDeletionVector>,
     new_rows: Option<SharedRowBufferSnapshot>,
     new_mem_indices: Vec<Arc<MemIndex>>,
+
+    // Prevent attempting to delete a row created after the deletion's lsn.
+    new_disk_file_lsn_map: HashMap<FileId, u64>,
+    flushing_batch_lsn_map: HashMap<u64, u64>,
+
     /// Assigned (non-zero) after a commit event.
     /// Inherits the previous snapshot tasks commit LSN baseline on snapshot.
     commit_lsn_baseline: u64,
@@ -261,7 +265,8 @@ impl SnapshotTask {
         Self {
             mooncake_table_config,
             new_disk_slices: Vec::new(),
-            disk_file_lsn_map: HashMap::new(),
+            new_disk_file_lsn_map: HashMap::new(),
+            flushing_batch_lsn_map: HashMap::new(),
             new_deletions: Vec::new(),
             new_record_batches: Vec::new(),
             new_rows: None,
@@ -287,7 +292,7 @@ impl SnapshotTask {
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         if !self.new_disk_slices.is_empty() {
-            assert!(!self.disk_file_lsn_map.is_empty());
+            assert!(!self.new_disk_file_lsn_map.is_empty());
             assert!(self.new_flush_lsn.is_some());
             return false;
         }
@@ -716,6 +721,11 @@ impl MooncakeTable {
                     record_batch: batch.1,
                     deletion_vector: None,
                 });
+        }
+        for batch in batches.iter() {
+            self.next_snapshot_task
+                .flushing_batch_lsn_map
+                .insert(batch.id, lsn);
         }
         self.next_snapshot_task.new_mem_indices.push(index.clone());
 
