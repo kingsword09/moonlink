@@ -346,18 +346,6 @@ impl MooncakeTable {
                 },
             );
         }
-        if let Some(lsn) = lsn {
-            for batch in batches.iter() {
-                assert!(
-                    self.next_snapshot_task
-                        .flushing_batch_lsn_map
-                        .insert(batch.id, lsn)
-                        .is_none(),
-                    "batch id {} already in flushing_batch_lsn_map",
-                    batch.id
-                );
-            }
-        }
 
         // Add mem index to stream state
         let index = Arc::new(index);
