@@ -463,6 +463,12 @@ impl MooncakeTable {
     }
 
     pub fn flush_stream(&mut self, xact_id: u32, lsn: Option<u64>) -> Result<()> {
+        // Temporarily remove to drop reference to self
+        let mut stream_state = self
+            .transaction_stream_states
+            .remove(&xact_id)
+            .expect("Stream state not found for xact_id, lsn: {xact_id, lsn}");
+
         // Record events for flush initiation.
         let flush_event_id = self.event_id_assigner.get_next_event_id();
         if let Some(event_replay_tx) = &self.event_replay_tx {
@@ -470,17 +476,12 @@ impl MooncakeTable {
                 flush_event_id,
                 /*xact_id=*/ Some(xact_id),
                 lsn,
+                stream_state.mem_slice.get_commit_check_point(),
             );
             event_replay_tx
                 .send(MooncakeTableEvent::FlushInitiation(table_event))
                 .unwrap();
         }
-
-        // Temporarily remove to drop reference to self
-        let mut stream_state = self
-            .transaction_stream_states
-            .remove(&xact_id)
-            .expect("Stream state not found for xact_id, lsn: {xact_id, lsn}");
 
         let mut disk_slice = self.prepare_stream_disk_slice(&mut stream_state, lsn)?;
 
@@ -526,13 +527,15 @@ impl MooncakeTable {
                     deletions: batch.batch.deletions.clone(),
                 },
             );
+        }
+        for (id, _) in stream_state.new_record_batches.iter() {
             assert!(
                 self.next_snapshot_task
                     .flushing_batch_lsn_map
-                    .insert(batch.id, lsn)
+                    .insert(*id, lsn)
                     .is_none(),
                 "batch id {} already in flushing_batch_lsn_map",
-                batch.id
+                *id
             );
         }
         stream_state

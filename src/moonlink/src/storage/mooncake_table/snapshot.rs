@@ -789,6 +789,7 @@ impl SnapshotTableState {
                 let mut processed_deletions = Vec::new();
                 // multiple candidates → disambiguate via full row identity comparison.
                 for deletion in deletions.iter() {
+                    assert!(deletion.row_identity.is_some(), "deletion: {deletion:?}, candidates: {candidates:?}, batch_id_to_lsn: {batch_id_to_lsn:?}, file_id_to_lsn: {file_id_to_lsn:?}");
                     let identity = deletion
                         .row_identity
                         .as_ref()

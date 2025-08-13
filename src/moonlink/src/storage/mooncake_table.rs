@@ -1112,6 +1112,7 @@ impl MooncakeTable {
                 flush_event_id,
                 /*xact_id=*/ None,
                 Some(lsn),
+                self.mem_slice.get_commit_check_point(),
             );
             event_replay_tx
                 .send(MooncakeTableEvent::FlushInitiation(table_event))
@@ -1260,8 +1261,16 @@ impl MooncakeTable {
 
                 // Record data compaction event completion.
                 if let Some(event_replay_tx) = &event_replay_tx {
-                    let table_event =
-                        replay_events::create_data_compaction_event_completion(table_event_id);
+                    let table_event = replay_events::create_data_compaction_event_completion(
+                        table_event_id,
+                        data_compaction_result
+                            .as_ref()
+                            .unwrap()
+                            .new_data_files
+                            .iter()
+                            .map(|file| file.0.file_id())
+                            .collect(),
+                    );
                     event_replay_tx
                         .send(MooncakeTableEvent::DataCompactionCompletion(table_event))
                         .unwrap();
