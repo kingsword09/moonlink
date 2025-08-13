@@ -348,9 +348,14 @@ impl MooncakeTable {
         }
         if let Some(lsn) = lsn {
             for batch in batches.iter() {
-                self.next_snapshot_task
-                    .flushing_batch_lsn_map
-                    .insert(batch.id, lsn);
+                assert!(
+                    self.next_snapshot_task
+                        .flushing_batch_lsn_map
+                        .insert(batch.id, lsn)
+                        .is_none(),
+                    "batch id {} already in flushing_batch_lsn_map",
+                    batch.id
+                );
             }
         }
 
@@ -531,9 +536,14 @@ impl MooncakeTable {
                     deletions: batch.batch.deletions.clone(),
                 },
             );
-            self.next_snapshot_task
-                .flushing_batch_lsn_map
-                .insert(batch.id, lsn);
+            assert!(
+                self.next_snapshot_task
+                    .flushing_batch_lsn_map
+                    .insert(batch.id, lsn)
+                    .is_none(),
+                "batch id {} already in flushing_batch_lsn_map",
+                batch.id
+            );
         }
         stream_state
             .stream_indices

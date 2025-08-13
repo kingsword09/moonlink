@@ -723,9 +723,14 @@ impl MooncakeTable {
                 });
         }
         for batch in batches.iter() {
-            self.next_snapshot_task
-                .flushing_batch_lsn_map
-                .insert(batch.id, lsn);
+            assert!(
+                self.next_snapshot_task
+                    .flushing_batch_lsn_map
+                    .insert(batch.id, lsn)
+                    .is_none(),
+                "batch id {} already in flushing_batch_lsn_map",
+                batch.id
+            );
         }
         self.next_snapshot_task.new_mem_indices.push(index.clone());
 
