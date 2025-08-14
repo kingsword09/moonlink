@@ -146,7 +146,14 @@ impl FileIndex {
                 /*index_file=*/
                 create_data_file(cur_file_id, cache_handle.get_cache_filepath().to_string()),
             )
-            .await;
+            .await
+            .map_err(|e| {
+                IcebergError::new(
+                    iceberg::ErrorKind::Unexpected,
+                    format!("Failed to create mooncake index block for file id {cur_file_id}"),
+                )
+                .with_source(e)
+            })?;
             cur_index_block.cache_handle = Some(cache_handle);
             mooncake_index_blocks.push(cur_index_block);
         }
@@ -313,16 +320,15 @@ mod tests {
             row_id_bits: 3,
             bucket_bits: 5,
             files: vec![local_data_file.clone()],
-            index_blocks: vec![
-                MooncakeIndexBlock::new(
-                    /*bucket_start_idx=*/ 0,
-                    /*bucket_end_idx=*/ 3,
-                    /*bucket_start_offset=*/ 10,
-                    /*index_file=*/
-                    create_data_file(/*file_id=*/ 1, local_index_filepath.clone()),
-                )
-                .await,
-            ],
+            index_blocks: vec![MooncakeIndexBlock::new(
+                /*bucket_start_idx=*/ 0,
+                /*bucket_end_idx=*/ 3,
+                /*bucket_start_offset=*/ 10,
+                /*index_file=*/
+                create_data_file(/*file_id=*/ 1, local_index_filepath.clone()),
+            )
+            .await
+            .unwrap()],
         };
 
         // Serialization.

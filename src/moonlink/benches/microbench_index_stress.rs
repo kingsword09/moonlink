@@ -26,7 +26,7 @@ fn bench_build_index(c: &mut Criterion) {
             builder
                 .set_files(files.clone())
                 .set_directory(dir_path.clone());
-            let index = rt.block_on(builder.build_from_flush(vec.clone(), 1));
+            let index = rt.block_on(builder.build_from_flush(vec.clone(), 1)).unwrap();
             black_box(index);
         });
     });
@@ -46,7 +46,7 @@ fn bench_index_query(c: &mut Criterion) {
         .set_files(files)
         .set_directory(tempfile::tempdir().unwrap().keep());
     let rt = Runtime::new().unwrap();
-    let index = rt.block_on(builder.build_from_flush(vec, /*file_id=*/ 1));
+    let index = rt.block_on(builder.build_from_flush(vec, /*file_id=*/ 1)).unwrap();
 
     group.bench_function("search_10m_entries", |b| {
         b.iter(|| {

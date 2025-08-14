@@ -1207,7 +1207,8 @@ impl MooncakeTable {
             builder.set_directory(table_directory);
             let merged = builder
                 .build_from_merge(file_indice_merge_payload.file_indices.clone(), cur_file_id)
-                .await;
+                .await
+                .unwrap();
             let index_merge_result = FileIndiceMergeResult {
                 uuid: file_indice_merge_payload.uuid,
                 old_file_indices: file_indice_merge_payload.file_indices,

@@ -96,7 +96,7 @@ mod tests {
             .set_directory(tempfile::tempdir().unwrap().keep());
         let file_index_1 = builder
             .build_from_flush(/*hash_entries=*/ vec![(1, 0, 0)], /*file_id=*/ 1)
-            .await;
+            .await.unwrap();
 
         // Create second file index.
         let mut builder = GlobalIndexBuilder::new();
@@ -108,7 +108,7 @@ mod tests {
             .set_directory(tempfile::tempdir().unwrap().keep());
         let file_index_2 = builder
             .build_from_flush(/*hash_entries=*/ vec![(2, 0, 0)], /*file_id=*/ 3)
-            .await;
+            .await.unwrap();
 
         let mut file_indices = vec![file_index_1.clone(), file_index_2.clone()];
         import_file_indices_to_cache(&mut file_indices, object_storage_cache.clone(), TableId(0))

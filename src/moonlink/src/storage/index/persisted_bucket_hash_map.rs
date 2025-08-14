@@ -1,4 +1,5 @@
 use crate::create_data_file;
+use crate::error::Result;
 use crate::storage::async_bitwriter::BitWriter as AsyncBitWriter;
 use crate::storage::storage_utils::{MooncakeDataFileRef, RecordLocation};
 use crate::NonEvictableHandle;
@@ -96,12 +97,12 @@ impl IndexBlock {
         bucket_end_idx: u32,
         bucket_start_offset: u64,
         index_file: MooncakeDataFileRef,
-    ) -> Self {
-        let file = tokio::fs::File::open(index_file.file_path()).await.unwrap();
-        let file_metadata = file.metadata().await.unwrap();
+    ) -> Result<Self> {
+        let file = tokio::fs::File::open(index_file.file_path()).await?;
+        let file_metadata = file.metadata().await?;
         let file = file.into_std().await;
-        let data = unsafe { Mmap::map(&file).unwrap() };
-        Self {
+        let data = unsafe { Mmap::map(&file)? };
+        Ok(Self {
             bucket_start_idx,
             bucket_end_idx,
             bucket_start_offset,
@@ -109,7 +110,7 @@ impl IndexBlock {
             file_size: file_metadata.len(),
             data: Arc::new(Some(data)),
             cache_handle: None,
-        }
+        })
     }
 
     fn create_iterator<'a>(
@@ -328,14 +329,18 @@ struct IndexBlockBuilder {
 
 /// TODO(hjiang): Error handle for all IO operations.
 impl IndexBlockBuilder {
-    pub async fn new(bucket_start_idx: u32, bucket_end_idx: u32, directory: PathBuf) -> Self {
+    pub async fn new(
+        bucket_start_idx: u32,
+        bucket_end_idx: u32,
+        directory: PathBuf,
+    ) -> Result<Self> {
         let file_name = format!("index_block_{}.bin", uuid::Uuid::now_v7());
         let file_path = directory.join(&file_name);
 
-        let file = AsyncFile::create(&file_path).await.unwrap();
+        let file = AsyncFile::create(&file_path).await?;
         let entry_writer = AsyncBitWriter::endian(file, AsyncBigEndian);
 
-        Self {
+        Ok(Self {
             bucket_start_idx,
             bucket_end_idx,
             buckets: vec![0; (bucket_end_idx - bucket_start_idx) as usize],
@@ -343,7 +348,7 @@ impl IndexBlockBuilder {
             entry_writer,
             current_bucket: bucket_start_idx,
             current_entry: 0,
-        }
+        })
     }
 
     /// Append current entry to the index block, and return whether buffer inside of bitwriter is full and should be flushed.
@@ -374,11 +379,11 @@ impl IndexBlockBuilder {
     }
 
     /// Flush buffered entries written to disk.
-    pub async fn flush(&mut self) {
-        self.entry_writer.flush().await.unwrap()
+    pub async fn flush(&mut self) -> Result<()> {
+        self.entry_writer.flush().await.map_err(|e| e.into())
     }
 
-    pub async fn build(mut self, metadata: &GlobalIndex, file_id: u64) -> IndexBlock {
+    pub async fn build(mut self, metadata: &GlobalIndex, file_id: u64) -> Result<IndexBlock> {
         for i in self.current_bucket + 1..self.bucket_end_idx {
             self.buckets[i as usize] = self.current_entry;
         }
@@ -388,7 +393,7 @@ impl IndexBlockBuilder {
         for cur_bucket in buckets {
             let to_flush = self.entry_writer.write(metadata.bucket_bits, cur_bucket);
             if to_flush {
-                self.entry_writer.flush().await.unwrap();
+                self.entry_writer.flush().await?;
             }
         }
         self.entry_writer.byte_align();
@@ -482,7 +487,7 @@ impl GlobalIndexBuilder {
         mut self,
         mut entries: Vec<(u64, usize, usize)>,
         file_id: u64,
-    ) -> GlobalIndex {
+    ) -> Result<GlobalIndex> {
         self.num_rows = entries.len() as u32;
         for entry in &mut entries {
             entry.0 = splitmix64(entry.0);
@@ -495,21 +500,21 @@ impl GlobalIndexBuilder {
         mut self,
         iter: impl Iterator<Item = (u64, usize, usize)>,
         file_id: u64,
-    ) -> GlobalIndex {
+    ) -> Result<GlobalIndex> {
         let (num_buckets, mut global_index) = self.create_global_index();
         let mut index_blocks = Vec::new();
         let mut index_block_builder =
-            IndexBlockBuilder::new(0, num_buckets + 1, self.directory.clone()).await;
+            IndexBlockBuilder::new(0, num_buckets + 1, self.directory.clone()).await?;
         for entry in iter {
             let to_flush =
                 index_block_builder.write_entry(entry.0, entry.1, entry.2, &global_index);
             if to_flush {
-                index_block_builder.flush().await;
+                index_block_builder.flush().await?;
             }
         }
-        index_blocks.push(index_block_builder.build(&global_index, file_id).await);
+        index_blocks.push(index_block_builder.build(&global_index, file_id).await?);
         global_index.index_blocks = index_blocks;
-        global_index
+        Ok(global_index)
     }
 
     // ================================
@@ -520,7 +525,7 @@ impl GlobalIndexBuilder {
         mut self,
         indices: HashSet<GlobalIndex>,
         file_id: u64,
-    ) -> GlobalIndex {
+    ) -> Result<GlobalIndex> {
         self.num_rows = indices.iter().map(|index| index.num_rows).sum();
         self.files = indices
             .iter()
@@ -539,22 +544,22 @@ impl GlobalIndexBuilder {
         mut self,
         mut iter: GlobalIndexMergingIterator<'_>,
         file_id: u64,
-    ) -> GlobalIndex {
+    ) -> Result<GlobalIndex> {
         let (num_buckets, mut global_index) = self.create_global_index();
         let mut index_block_builder =
-            IndexBlockBuilder::new(0, num_buckets + 1, self.directory.clone()).await;
+            IndexBlockBuilder::new(0, num_buckets + 1, self.directory.clone()).await?;
         while let Some(entry) = iter.next() {
             let to_flush =
                 index_block_builder.write_entry(entry.0, entry.1, entry.2, &global_index);
             if to_flush {
-                index_block_builder.flush().await;
+                index_block_builder.flush().await?;
             }
         }
 
         let mut index_blocks = Vec::new();
-        index_blocks.push(index_block_builder.build(&global_index, file_id).await);
+        index_blocks.push(index_block_builder.build(&global_index, file_id).await?);
         global_index.index_blocks = index_blocks;
-        global_index
+        Ok(global_index)
     }
 
     // ================================
@@ -575,7 +580,7 @@ impl GlobalIndexBuilder {
         new_data_files: Vec<MooncakeDataFileRef>,
         get_remapped_record_location: GetRemappedRecLoc,
         get_seg_idx: GetSegIdx,
-    ) -> GlobalIndex
+    ) -> Result<GlobalIndex>
     where
         GetRemappedRecLoc: FnMut(RecordLocation) -> Option<RecordLocation>,
         GetSegIdx: FnMut(RecordLocation) -> usize, /*seg_idx*/
@@ -610,14 +615,14 @@ impl GlobalIndexBuilder {
         new_data_files: Vec<MooncakeDataFileRef>,
         mut get_remapped_record_location: GetRemappedRecLoc,
         mut get_seg_idx: GetSegIdx,
-    ) -> GlobalIndex
+    ) -> Result<GlobalIndex>
     where
         GetRemappedRecLoc: FnMut(RecordLocation) -> Option<RecordLocation>,
         GetSegIdx: FnMut(RecordLocation) -> usize, /*seg_idx*/
     {
         let (num_buckets, mut global_index) = self.create_global_index();
         let mut index_block_builder =
-            IndexBlockBuilder::new(0, num_buckets + 1, self.directory.clone()).await;
+            IndexBlockBuilder::new(0, num_buckets + 1, self.directory.clone()).await?;
 
         while let Some((hash, old_seg_idx, old_row_idx)) = iter.next() {
             let old_record_location =
@@ -631,20 +636,20 @@ impl GlobalIndexBuilder {
                 let to_flush =
                     index_block_builder.write_entry(hash, new_seg_idx, new_row_idx, &global_index);
                 if to_flush {
-                    index_block_builder.flush().await;
+                    index_block_builder.flush().await?;
                 }
             }
             // The record doesn't exist in compacted data files, which means the corresponding row doesn't exist in the data file after compaction, simply ignore.
         }
 
         let mut index_blocks = Vec::new();
-        index_blocks.push(index_block_builder.build(&global_index, file_id).await);
+        index_blocks.push(index_block_builder.build(&global_index, file_id).await?);
         global_index.index_blocks = index_blocks;
 
         // Now all the (hash, seg_idx, row_idx) points to the new files passed in.
         global_index.files = new_data_files;
 
-        global_index
+        Ok(global_index)
     }
 }
 
@@ -921,7 +926,8 @@ mod tests {
             .set_directory(tempfile::tempdir().unwrap().keep());
         let index = builder
             .build_from_flush(hash_entries.clone(), /*file_id=*/ 1)
-            .await;
+            .await
+            .unwrap();
 
         // Search for a non-existent key doesn't panic.
         assert!(index
@@ -965,7 +971,7 @@ mod tests {
         builder
             .set_files(files)
             .set_directory(tempfile::tempdir().unwrap().keep());
-        let index1 = builder.build_from_flush(vec, /*file_id=*/ 4).await;
+        let index1 = builder.build_from_flush(vec, /*file_id=*/ 4).await.unwrap();
 
         let files = vec![
             create_data_file(/*file_id=*/ 5, "4.parquet".to_string()),
@@ -976,7 +982,7 @@ mod tests {
         builder
             .set_files(files)
             .set_directory(tempfile::tempdir().unwrap().keep());
-        let index2 = builder.build_from_flush(vec, /*file_id=*/ 7).await;
+        let index2 = builder.build_from_flush(vec, /*file_id=*/ 7).await.unwrap();
 
         let mut builder = GlobalIndexBuilder::new();
         builder.set_directory(tempfile::tempdir().unwrap().keep());
@@ -985,7 +991,8 @@ mod tests {
                 HashSet::<GlobalIndex>::from([index1, index2]),
                 /*file_id=*/ 8,
             )
-            .await;
+            .await
+            .unwrap();
 
         let values = (0..200).collect::<Vec<_>>();
         let mut ret = merged

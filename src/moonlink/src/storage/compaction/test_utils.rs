@@ -117,7 +117,7 @@ pub(crate) async fn create_file_index_1(
     let mut builder = GlobalIndexBuilder::new();
     builder.set_files(vec![data_file]);
     builder.set_directory(directory);
-    builder.build_from_flush(entries, start_file_id).await
+    builder.build_from_flush(entries, start_file_id).await.unwrap()
 }
 pub(crate) async fn create_file_index_2(
     directory: std::path::PathBuf,
@@ -145,7 +145,7 @@ pub(crate) async fn create_file_index_2(
     let mut builder = GlobalIndexBuilder::new();
     builder.set_files(vec![data_file]);
     builder.set_directory(directory);
-    builder.build_from_flush(entries, start_file_id).await
+    builder.build_from_flush(entries, start_file_id).await.unwrap()
 }
 pub(crate) async fn create_file_index_for_both_batches(
     directory: std::path::PathBuf,
@@ -164,7 +164,7 @@ pub(crate) async fn create_file_index_for_both_batches(
     let mut builder = GlobalIndexBuilder::new();
     builder.set_files(vec![data_file]);
     builder.set_directory(directory);
-    builder.build_from_flush(entries, start_file_id).await
+    builder.build_from_flush(entries, start_file_id).await.unwrap()
 }
 
 /// Test util functions to dump deletion vector puffin file to local filesystem.
