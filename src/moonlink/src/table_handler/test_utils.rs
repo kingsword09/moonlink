@@ -602,6 +602,23 @@ pub async fn check_read_snapshot(
     let (data_files, puffin_files, deletion_vectors, position_deletes) =
         decode_read_state_for_testing(&read_state);
 
+    // Debug summary for chaos runs
+    let pd_sample: Vec<(u32, u32)> = position_deletes
+        .iter()
+        .take(16)
+        .map(|d| (d.data_file_number, d.data_file_row_number))
+        .collect();
+    debug!(
+        "check_read_snapshot: target_lsn={:?}, expected_ids_len={}, files={}, puffin_files={}, dvecs={}, pos_del={}, pos_del_sample(first 16)={:?}",
+        target_lsn,
+        expected_ids.len(),
+        data_files.len(),
+        puffin_files.len(),
+        deletion_vectors.len(),
+        position_deletes.len(),
+        pd_sample
+    );
+
     if data_files.is_empty() && !expected_ids.is_empty() {
         unreachable!(
             "No snapshot files returned for LSN {:?} when rows (IDs: {:?}) were expected. Expected files because expected_ids is not empty.",

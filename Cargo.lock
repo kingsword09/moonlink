@@ -4279,6 +4279,7 @@ dependencies = [
  "tokio",
  "tokio-bitstream-io",
  "tracing",
+ "tracing-subscriber",
  "typed-builder 0.20.1",
  "url",
  "uuid",

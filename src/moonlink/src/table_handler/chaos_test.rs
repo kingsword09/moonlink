@@ -25,6 +25,10 @@ use crate::union_read::ReadStateManager;
 use crate::{IcebergTableConfig, ObjectStorageCache, ObjectStorageCacheConfig};
 use crate::{StorageConfig, TableEventManager};
 
+// Test logging initialization
+use std::sync::Once;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
 use function_name::named;
 use more_asserts as ma;
 use pico_args::Arguments;
@@ -47,6 +51,20 @@ const NON_UPDATE_COMMAND_INTERVAL_LSN: u64 = 5;
 struct ChaosTestArgs {
     seed: u64,
     print_events_on_success: bool,
+}
+
+// Initialize tracing once for tests so debug logs are visible with --nocapture.
+static INIT_TRACING: Once = Once::new();
+fn init_test_tracing() {
+    INIT_TRACING.call_once(|| {
+        let env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+        let fmt_layer = fmt::layer().with_test_writer().with_ansi(false);
+        let _ = tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .try_init();
+    });
 }
 
 /// Combine argument parsing logic into one function using pico-args.
@@ -1012,6 +1030,8 @@ async fn validate_persisted_iceberg_table(
 }
 
 async fn chaos_test_impl(mut env: TestEnvironment) {
+    // Ensure tracing is initialized for tests.
+    init_test_tracing();
     let test_env_config = env.test_env_config.clone();
     let event_sender = env.event_sender.clone();
     let read_state_manager = env.read_state_manager;
@@ -1595,7 +1615,7 @@ async fn test_upsert_chaos_with_no_background_maintenance() {
 
 /// Chaos test with index merge enabled by default.
 #[named]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn test_upsert_chaos_with_index_merge() {
     let iceberg_temp_dir = tempdir().unwrap();
     let root_directory = iceberg_temp_dir.path().to_str().unwrap().to_string();

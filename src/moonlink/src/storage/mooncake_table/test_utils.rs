@@ -19,6 +19,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::collections::HashSet;
 use std::fs::{create_dir_all, File};
 use tempfile::{tempdir, TempDir};
+use tracing::{debug, warn};
 
 pub struct TestContext {
     pub temp_dir: TempDir,
@@ -198,16 +199,109 @@ fn verify_files_and_deletions_impl(
     deletions: &[PositionDelete],
     expected_ids: &[i32],
 ) {
+    debug!(
+        "verify_files_and_deletions_impl: files={}, deletions={}, expected_ids_len={}",
+        files.len(),
+        deletions.len(),
+        expected_ids.len()
+    );
+    for (i, path) in files.iter().enumerate() {
+        debug!("  file[{i}]: {path}");
+    }
+
     let mut res = vec![];
+
     for (i, path) in files.iter().enumerate() {
         let mut ids = read_ids_from_parquet(path);
+        let orig_len = ids.len();
+        debug!("read file[{i}] rows={orig_len}: {path}");
+
+        let mut deleted_positions: Vec<usize> = Vec::new();
         for deletion in deletions {
             if deletion.data_file_number == i as u32 {
-                ids[deletion.data_file_row_number as usize] = None;
+                let pos = deletion.data_file_row_number as usize;
+                if pos >= ids.len() {
+                    warn!(
+                        "position delete out of bounds: file_index={}, pos={}, file_rows={}",
+                        i,
+                        pos,
+                        ids.len()
+                    );
+                    continue;
+                }
+                if ids[pos].is_none() {
+                    warn!(
+                        "duplicate delete encountered: file_index={}, pos={}",
+                        i, pos
+                    );
+                }
+                ids[pos] = None;
+                deleted_positions.push(pos);
             }
         }
-        res.extend(ids.into_iter().flatten());
+        if !deleted_positions.is_empty() {
+            deleted_positions.sort_unstable();
+            debug!(
+                "applied deletes for file[{i}]: count={}, positions={:?}",
+                deleted_positions.len(),
+                deleted_positions
+            );
+        }
+
+        // Remaining IDs for this file
+        let remaining: Vec<i32> = ids.iter().flatten().copied().collect();
+
+        // Per-file duplicate detection prior to global aggregation
+        {
+            use std::collections::HashMap;
+            let mut counts: HashMap<i32, usize> = HashMap::new();
+            for id in &remaining {
+                *counts.entry(*id).or_insert(0) += 1;
+            }
+            let dups: Vec<(i32, usize)> = counts.into_iter().filter(|(_, c)| *c > 1).collect();
+            if !dups.is_empty() {
+                debug!("duplicates within file[{i}]: {:?}", dups);
+            }
+        }
+
+        res.extend(remaining.into_iter());
     }
+
+    // Global diagnostics before assertion.
+    {
+        use std::collections::{HashMap, HashSet};
+        let mut counts: HashMap<i32, usize> = HashMap::new();
+        for id in &res {
+            *counts.entry(*id).or_insert(0) += 1;
+        }
+        let global_dups: Vec<(i32, usize)> = counts
+            .iter()
+            .filter_map(|(id, c)| if *c > 1 { Some((*id, *c)) } else { None })
+            .collect();
+
+        if !global_dups.is_empty() {
+            debug!("global duplicate IDs: {:?}", global_dups);
+        }
+
+        let actual_set: HashSet<i32> = res.iter().copied().collect();
+        let expected_set: HashSet<i32> = expected_ids.iter().copied().collect();
+
+        let missing: Vec<i32> = expected_set.difference(&actual_set).copied().collect();
+        let extra: Vec<i32> = actual_set.difference(&expected_set).copied().collect();
+
+        if !missing.is_empty() || !extra.is_empty() {
+            let missing_sample: Vec<i32> = missing.iter().cloned().take(32).collect();
+            let extra_sample: Vec<i32> = extra.iter().cloned().take(32).collect();
+            debug!(
+                "diff vs expected: missing_count={}, extra_count={}, missing_sample={:?}, extra_sample={:?}",
+                missing.len(),
+                extra.len(),
+                missing_sample,
+                extra_sample
+            );
+        }
+    }
+
     res.sort();
     assert_eq!(res, expected_ids);
 }

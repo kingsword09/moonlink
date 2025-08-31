@@ -1,0 +1,96 @@
+name: Chaos Test (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_name:
+        description: "Fully-qualified test name to run"
+        required: false
+        default: "table_handler::chaos_test::test_upsert_chaos_with_index_merge"
+      cargo_features:
+        description: "Cargo features to enable"
+        required: false
+        default: "chaos-test"
+      log_level:
+        description: "RUST_LOG filter (e.g., moonlink=debug,opendal=warn,apache_avro=warn,info)"
+        required: false
+        default: "moonlink=debug,opendal=warn,apache_avro=warn,info"
+      repeat:
+        description: "How many times to repeat the test sequentially"
+        required: false
+        default: "5"
+
+concurrency:
+  group: chaos-test-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  run-chaos-test:
+    name: Run ${{ inputs.test_name }} x${{ inputs.repeat }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (from repository rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # The repo has rust-toolchain.toml pinned to 1.88.0 and components
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Show versions
+        run: |
+          rustc -Vv
+          cargo -V
+
+      - name: Run chaos test (sequential repeats)
+        shell: bash
+        env:
+          RUST_LOG: ${{ inputs.log_level }}
+          RUST_BACKTRACE: 1
+        run: |
+          set -euo pipefail
+          cd src/moonlink
+
+          TEST_NAME="${{ inputs.test_name }}"
+          FEATURES="${{ inputs.cargo_features }}"
+          REPEAT="${{ inputs.repeat }}"
+
+          echo "Running test: $TEST_NAME"
+          echo "Features: $FEATURES"
+          echo "Repeats: $REPEAT"
+          echo "RUST_LOG=$RUST_LOG"
+
+          mkdir -p chaos_logs
+
+          # Run sequentially so logs are easy to attribute per-run
+          for i in $(seq 1 "$REPEAT"); do
+            echo "==== Run $i/$REPEAT ====" | tee "chaos_logs/run_${i}.header.txt"
+            # Use PIPESTATUS to capture cargo test exit code when piping to tee
+            ( RUST_LOG="$RUST_LOG" RUST_BACKTRACE=1 cargo test -p moonlink --features "$FEATURES" "$TEST_NAME" -- --nocapture | tee "chaos_logs/run_${i}.log" )
+            status=${PIPESTATUS[0]}
+            echo "$status" > "chaos_logs/run_${i}.status"
+            if [[ $status -ne 0 ]]; then
+              echo "Test failed on run $i with status $status" | tee "chaos_logs/run_${i}.failed"
+              # Stop early on first failure to preserve time and surface the error quickly
+              break
+            fi
+          done
+
+      - name: Upload chaos test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: src/moonlink/chaos_logs/
+          if-no-files-found: warn

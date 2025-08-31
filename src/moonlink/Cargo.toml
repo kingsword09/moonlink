@@ -96,6 +96,7 @@ rand = "0.9"
 rstest = "0.26"
 rstest_reuse = "0.7"
 tempfile = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[bench]]
 name = "microbench_write_mooncake_table"
