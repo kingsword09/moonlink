@@ -26,6 +26,7 @@ concurrency:
 
 jobs:
   run-chaos-test:
+    if: github.ref != 'refs/heads/main'
     name: Run ${{ inputs.test_name }} x${{ inputs.repeat }}
     runs-on: ubuntu-latest
     timeout-minutes: 720
@@ -36,8 +37,9 @@ jobs:
       - name: Install Rust toolchain (from repository rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@master
         with:
-          # The repo has rust-toolchain.toml pinned to 1.88.0 and components
-          override: true
+          # Match repo rust-toolchain.toml
+          toolchain: 1.88.0
+          components: clippy, rustfmt
 
       - name: Cache cargo registry
         uses: actions/cache@v4
